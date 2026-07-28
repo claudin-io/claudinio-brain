@@ -27,8 +27,34 @@ accepting the C++ dep — fine on macOS, painful for musl cross-builds.
 
 ## MSRV
 
-Declared `rust-version = "1.88"`, not edition 2024's 1.85 floor: `schemars` →
-`darling 0.23` requires 1.88.
+Declared `rust-version = "1.95"`, and the number came from building, not from
+reading manifests.
+
+`cargo metadata` reports 1.88 as the highest floor any dependency *declares*
+(`schemars` → `darling 0.23`), and that is what was declared originally. It was
+wrong. `libsqlite3-sys 0.38.1` calls `cfg_select!` in its build script and
+declares no `rust-version` at all, so nothing in the metadata reflects it.
+`cfg_select` was unstable through 1.94:
+
+| toolchain | result |
+|---|---|
+| 1.88 – 1.94 | `error[E0658]: use of unstable library feature 'cfg_select'` |
+| 1.95, 1.96 | builds |
+
+There is no downgrade path: `rusqlite 0.40.1` requires `libsqlite3-sys ^0.38.1`,
+and 0.38.0 is not a resolvable alternative.
+
+The general lesson, which cost the first CI run this repository ever had: a
+declared MSRV is a claim about a *build*, and the only way to check it is to run
+one. A build-script dependency can raise the real floor without any manifest
+saying so.
+
+## musl needs `_GNU_SOURCE`
+
+`sqlite-vec`'s C uses the BSD spellings `u_int8_t`, `u_int16_t` and `u_int64_t`.
+glibc declares those unconditionally; musl only does under `_GNU_SOURCE`, so the
+musl build dies at `unknown type name 'u_int8_t'` before compiling any Rust. CI
+sets `CFLAGS_x86_64_unknown_linux_musl=-D_GNU_SOURCE` for that target only.
 
 ## SQLite gotchas found the hard way
 

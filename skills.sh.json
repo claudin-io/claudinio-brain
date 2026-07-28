@@ -1,0 +1,11 @@
+{
+  "$schema": "https://skills.sh/schemas/skills.sh.schema.json",
+  "notGrouped": "bottom",
+  "groupings": [
+    {
+      "title": "Memory",
+      "description": "Give an agent durable, time-aware memory backed by the brain CLI.",
+      "skills": ["claudinio-brain"]
+    }
+  ]
+}

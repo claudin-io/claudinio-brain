@@ -8,7 +8,7 @@
 <p align="center">
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue.svg"></a>
   <a href="https://github.com/claudin-io/claudinio-brain/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/claudin-io/claudinio-brain/actions/workflows/ci.yml/badge.svg"></a>
-  <img alt="Rust" src="https://img.shields.io/badge/rust-1.88%2B-orange.svg">
+  <img alt="Rust" src="https://img.shields.io/badge/rust-1.95%2B-orange.svg">
   <img alt="Platforms" src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey">
 </p>
 
@@ -219,6 +219,20 @@ predicate  Corrige a cardinalidade de um predicado
 Todo comando aceita `--json`, e toda resposta JSON é carimbada com o brain que a
 produziu. `--brain <caminho>`, `--use <nome>` e `--global` escolhem com qual
 brain falar.
+
+## Usando a partir de um agente
+
+`skills/claudinio-brain/` é uma [Agent Skill](https://agentskills.io) que ensina
+um agente quando gravar um fato e quando apenas responder — incluindo as partes
+fáceis de errar, como a diferença entre um valor que *mudou* e um que *nunca foi
+verdade*.
+
+```bash
+npx skills add claudin-io/claudinio-brain     # ou copie o diretório para a pasta
+                                              # de skills do seu agente
+```
+
+A skill assume o `brain` no `PATH` e não faz nenhuma requisição de rede.
 
 ## Evals
 

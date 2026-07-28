@@ -47,6 +47,12 @@ jobs:
       - if: matrix.target == 'x86_64-unknown-linux-musl'
         run: sudo apt-get update && sudo apt-get install -y musl-tools
 
+      # sqlite-vec's C uses the BSD spellings `u_int8_t`/`u_int16_t`/`u_int64_t`,
+      # which musl only declares under _GNU_SOURCE. Without this the build fails
+      # at "unknown type name 'u_int8_t'" before a single test runs.
+      - if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: echo "CFLAGS_x86_64_unknown_linux_musl=-D_GNU_SOURCE" >> "$GITHUB_ENV"
+
       - run: cargo test --target ${{ matrix.target }}
       # The core must stay buildable without rmcp/tokio.
       - run: cargo check --target ${{ matrix.target }} --no-default-features
@@ -65,6 +71,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@1.88.0
+      - uses: dtolnay/rust-toolchain@1.95.0
       - uses: Swatinem/rust-cache@v2
       - run: cargo check --all-targets

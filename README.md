@@ -8,7 +8,7 @@
 <p align="center">
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue.svg"></a>
   <a href="https://github.com/claudin-io/claudinio-brain/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/claudin-io/claudinio-brain/actions/workflows/ci.yml/badge.svg"></a>
-  <img alt="Rust" src="https://img.shields.io/badge/rust-1.88%2B-orange.svg">
+  <img alt="Rust" src="https://img.shields.io/badge/rust-1.95%2B-orange.svg">
   <img alt="Platforms" src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey">
 </p>
 
@@ -214,6 +214,20 @@ predicate  Fix a predicate's cardinality
 Every command takes `--json`, and every JSON answer is stamped with the brain
 that produced it. `--brain <path>`, `--use <name>` and `--global` select which
 brain to talk to.
+
+## Using it from an agent
+
+`skills/claudinio-brain/` is an [Agent Skill](https://agentskills.io) that teaches
+an agent when to write a fact and when to just answer — including the parts that
+are easy to get wrong, like the difference between a value that *changed* and one
+that was *never true*.
+
+```bash
+npx skills add claudin-io/claudinio-brain     # or copy the directory into your
+                                              # agent's skills folder
+```
+
+The skill assumes `brain` is on `PATH` and makes no network requests.
 
 ## Evals
 
