@@ -171,6 +171,32 @@ error, never the global one.
 
 ## Install
 
+A prebuilt binary. No Rust toolchain, no C compiler, nothing to build:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/claudin-io/claudinio-brain/main/install.sh | sh
+```
+
+```powershell
+irm https://raw.githubusercontent.com/claudin-io/claudinio-brain/main/install.ps1 | iex
+```
+
+It lands in `~/.local/bin` (`%LOCALAPPDATA%\Programs\brain` on Windows) and the
+download is checked against the release's `SHA256SUMS` before it is installed.
+`BRAIN_INSTALL_DIR` chooses somewhere else; `BRAIN_VERSION` chooses a release —
+`nightly` tracks `main`, rebuilt on every push.
+
+| platform | build |
+|---|---|
+| macOS | `aarch64-apple-darwin`, `x86_64-apple-darwin` |
+| Linux | `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl` |
+| Windows | `x86_64-pc-windows-msvc` |
+
+The Linux builds are static musl, so they have no glibc floor and run on old
+distros and on Alpine alike.
+
+### From source
+
 Requires a C compiler (for `onig`, bundled SQLite and `sqlite-vec`). A C++
 compiler is deliberately **not** required — see [docs/stack-notes.md](docs/stack-notes.md).
 

@@ -141,6 +141,23 @@ aggregate, why `vec0` needs `vec_int8(?)` on every write and match, why recursiv
 CTEs need `UNION` rather than `UNION ALL`, and why `directories` ignores XDG on
 macOS.
 
+## Releases
+
+`.github/workflows/release.yml` builds five prebuilt binaries — macOS arm64 and
+x86_64, Linux musl arm64 and x86_64, Windows x86_64 — and publishes them with a
+`SHA256SUMS` that `install.sh` verifies against.
+
+- **Every push to `main`** replaces the rolling `nightly` prerelease, tag and
+  all, so it always points at the commit that produced the binaries.
+- **Pushing a `v*` tag** cuts a permanent release. `install.sh` installs the
+  newest of these, and only falls back to `nightly` when no `v*` tag exists yet.
+
+Linux is musl-only on purpose: the gnu runners are Ubuntu 24.04, so a gnu build
+would carry a glibc 2.39 floor and refuse to start on Debian 12. `ci.yml` still
+tests the gnu target. If you add a target, add it to the table in both READMEs —
+`install.sh` derives the asset name from `uname`, so a missing build shows up as
+a 404 with no explanation.
+
 ## Commits
 
 Conventional commits (`feat(scope):`, `fix:`, `docs:`). The body matters more

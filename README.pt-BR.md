@@ -175,6 +175,32 @@ nunca o global.
 
 ## Instalação
 
+Um binário pronto. Sem toolchain Rust, sem compilador C, nada para compilar:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/claudin-io/claudinio-brain/main/install.sh | sh
+```
+
+```powershell
+irm https://raw.githubusercontent.com/claudin-io/claudinio-brain/main/install.ps1 | iex
+```
+
+Ele vai para `~/.local/bin` (`%LOCALAPPDATA%\Programs\brain` no Windows), e o
+download é conferido contra o `SHA256SUMS` do release antes de ser instalado.
+`BRAIN_INSTALL_DIR` escolhe outro lugar; `BRAIN_VERSION` escolhe um release —
+`nightly` acompanha a `main`, recompilado a cada push.
+
+| plataforma | build |
+|---|---|
+| macOS | `aarch64-apple-darwin`, `x86_64-apple-darwin` |
+| Linux | `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl` |
+| Windows | `x86_64-pc-windows-msvc` |
+
+Os builds de Linux são musl estáticos: não têm piso de glibc, então rodam tanto
+em distro antiga quanto em Alpine.
+
+### A partir do código
+
 Precisa de um compilador C (para `onig`, SQLite embutido e `sqlite-vec`). Um
 compilador C++ deliberadamente **não** é necessário — veja
 [docs/stack-notes.md](docs/stack-notes.md).

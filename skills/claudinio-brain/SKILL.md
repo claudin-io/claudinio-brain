@@ -2,7 +2,7 @@
 name: claudinio-brain
 description: Give the agent durable, time-aware memory backed by the `brain` CLI — record facts, decisions, config values and relations, then recall what is true now or what was true at any past instant. Use when the user says remember this, what did we decide, what is the current value, what was it before, what changed, why did it change, or when a fact learned in one session must survive into the next. Also use before answering from assumption about a project-specific value (a port, an owner, a price, a deadline) that the brain may already hold.
 license: MIT
-compatibility: Requires the `brain` binary on PATH (cargo install --git https://github.com/claudin-io/claudinio-brain). Local only; makes no network requests.
+compatibility: Requires the `brain` binary on PATH. If it is missing, this skill installs it — one prebuilt binary for macOS, Linux or Windows, no toolchain needed. Local only; `brain` itself makes no network requests.
 metadata:
   author: claudin-io
   repository: https://github.com/claudin-io/claudinio-brain
@@ -28,6 +28,30 @@ Check the binary is there and find out which brain you are talking to:
 brain --version
 brain where          # prints the brain that would be used here, and why
 ```
+
+If `brain --version` fails with "command not found", install it — this is a
+single prebuilt binary, not a build, and it needs no toolchain:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/claudin-io/claudinio-brain/main/install.sh | sh
+```
+
+```powershell
+irm https://raw.githubusercontent.com/claudin-io/claudinio-brain/main/install.ps1 | iex
+```
+
+Say what you are about to install before running it; installing software is the
+user's call, not yours. Then:
+
+- It lands in `~/.local/bin`, which is not always on `PATH`. If the freshly
+  installed `brain` is still not found, call it as `~/.local/bin/brain` for the
+  rest of the session and tell the user how to add the directory permanently —
+  do not edit their shell profile yourself.
+- `BRAIN_INSTALL_DIR=/somewhere/else` if `~/.local/bin` is wrong for this
+  machine.
+- If the install itself fails, stop and report it. Do not fall back to
+  `cargo install`: that needs a Rust toolchain and a C compiler, and takes
+  minutes.
 
 `brain where` reporting that nothing exists yet means you must create one before
 writing. Do not create one silently in a user's repository — ask first:
