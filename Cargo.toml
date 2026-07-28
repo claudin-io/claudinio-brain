@@ -46,7 +46,7 @@ model2vec-rs = { version = "0.2.1", default-features = false, features = [
 ] }
 # Direct dependency on purpose: feature unification supplies tokenizers/onig (C)
 # without esaxx_fast (C++). model2vec-rs's own `onig` feature would drag in both.
-tokenizers = { version = "0.21", default-features = false, features = ["onig"] }
+tokenizers = { version = "0.23", default-features = false, features = ["onig"] }
 
 # --- MCP (behind the default-on `mcp` feature) -------------------------------
 rmcp = { version = "=2.2.0", features = [
