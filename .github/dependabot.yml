@@ -1,0 +1,16 @@
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 5
+    ignore:
+      # Pinned with `=` on purpose: sqlite-vec is 0.1.x with no on-disk format
+      # guarantee, so a bump is a schema decision and not a dependency update.
+      - dependency-name: sqlite-vec
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly

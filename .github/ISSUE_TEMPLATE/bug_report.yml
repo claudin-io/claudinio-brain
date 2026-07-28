@@ -1,0 +1,84 @@
+name: Bug report
+description: Something is broken or behaves differently than documented
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. Please do **not** use this template for security
+        issues — see [SECURITY.md](https://github.com/claudin-io/claudinio-brain/blob/main/SECURITY.md).
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you expected, and what happened instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: |
+        A sequence of `brain` commands is ideal — it makes the bug a test.
+        Please include the `init`, so the brain starts empty.
+      placeholder: |
+        brain init --label loja
+        brain remember --subject produto_a --predicate preco --value 20
+        brain get produto_a preco
+        # expected 20, got nothing
+      render: shell
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `brain --version`, or the commit you built from.
+      placeholder: "brain 0.1.0"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - macOS (Apple Silicon)
+        - macOS (Intel)
+        - Linux (x64, glibc)
+        - Linux (x64, musl)
+        - Linux (ARM64)
+        - Other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: Best guess is fine.
+      options:
+        - Writing facts (supersession, correction, retraction)
+        - Reading a point in time (get, history, --as-of)
+        - Recall quality — the right fact is not found or not ranked first
+        - Graph traversal (link, entity --neighbors)
+        - Names (alias, --learn)
+        - Which brain got used (init, where, --use, --global)
+        - Build or install
+        - Other / not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Output
+      description: |
+        Run with `BRAIN_LOG=debug` and paste the relevant part. Adding `--json`
+        to the failing command usually shows more than the plain output does.
+        **Redact anything private** — this is a public issue tracker, and a brain
+        holds whatever you put in it.
+      render: shell
