@@ -96,6 +96,10 @@ pub enum Cmd {
     /// Rebuild the vector index from the stored embeddings.
     Reindex,
 
+    /// Speak MCP over stdio, so an agent can use this brain as a tool.
+    #[cfg(feature = "mcp")]
+    Serve,
+
     /// Fix a predicate's cardinality.
     Predicate {
         name: String,

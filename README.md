@@ -215,6 +215,33 @@ Every command takes `--json`, and every JSON answer is stamped with the brain
 that produced it. `--brain <path>`, `--use <name>` and `--global` select which
 brain to talk to.
 
+## MCP
+
+`brain serve` speaks MCP over stdio, so an agent can use a brain as a tool
+surface. Nine tools: `remember`, `link`, `recall`, `get`, `history`, `entity`,
+`why`, `retract`, `alias`.
+
+```json
+{
+  "mcpServers": {
+    "brain": { "command": "brain", "args": ["serve", "--global"] }
+  }
+}
+```
+
+The server resolves its brain once at startup, through the same eight-rung
+ladder as everything else, and stays bound to it for the session — so the
+identity is stated once in the server instructions rather than stamped on every
+response, unlike the CLI where each invocation could name a different file.
+
+Tool descriptions carry the guidance that is easy to get wrong: that a value
+which *changed* calls for `remember` and one that was *never true* calls for
+`retract`; that `entity` tells you which spelling something is already stored
+under, because identity is exact and two parallel histories cannot be repaired.
+
+`recall` does not learn names unless asked. A read that writes is a read that
+cannot be replayed.
+
 ## Using it from an agent
 
 `skills/claudinio-brain/` is an [Agent Skill](https://agentskills.io) that teaches
@@ -254,10 +281,9 @@ Pre-1.0. The on-disk format is not yet stable and there is no migration path
 between schema versions.
 
 Built and working: the sealed store and resolution ladder, the bitemporal fact
-model, all four retrieval channels, and declared plus learned names. An MCP
-server is the next piece — the `mcp` cargo feature is declared and on by default
-but nothing implements it yet, so today the CLI and the Rust library are the two
-real surfaces.
+model, all four retrieval channels, declared plus learned names, and the MCP
+server. Three surfaces — the CLI, the MCP server, and the Rust library — all
+over one core, so what an agent sees is exactly what `brain recall` shows you.
 
 ## Contributing
 

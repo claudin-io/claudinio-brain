@@ -171,6 +171,14 @@ Do not write:
 - **Nothing is deleted.** There is no `brain forget <fact>`. That is the point,
   but it means a fact written carelessly is visible forever in `history`.
 
+## If MCP is available instead
+
+`brain serve` exposes the same operations as MCP tools (`remember`, `link`,
+`recall`, `get`, `history`, `entity`, `why`, `retract`, `alias`). When those
+tools are connected, prefer them over shelling out — same core, structured
+results, no output parsing. Everything above still applies: the tools are the
+same operations with the same rules.
+
 ## Full command list
 
 ```

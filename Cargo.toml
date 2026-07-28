@@ -53,6 +53,9 @@ rmcp = { version = "=2.2.0", features = [
   "server",
   "transport-io",
   "macros",
+  # Not a default feature of rmcp, and the tool router does not compile without
+  # it: parameter schemas are what tell an agent how to call a tool.
+  "schemars",
 ], optional = true }
 tokio = { version = "1", features = [
   "rt-multi-thread",

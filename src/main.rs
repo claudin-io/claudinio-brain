@@ -47,6 +47,8 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Cmd::Entity(args) => cmd_entity(args, &cli, &ctx),
         Cmd::Alias(args) => cmd_alias(args, &cli, &ctx),
         Cmd::Reindex => cmd_reindex(&cli, &ctx),
+        #[cfg(feature = "mcp")]
+        Cmd::Serve => cmd_serve(&cli, &ctx),
         Cmd::Why { fact_id } => cmd_why(*fact_id, &cli, &ctx),
         Cmd::Retract { fact_id, reason } => cmd_retract(*fact_id, reason.as_deref(), &cli, &ctx),
         Cmd::Predicate { name, cardinality } => cmd_predicate(name, *cardinality, &cli, &ctx),
@@ -258,6 +260,19 @@ fn cmd_alias(args: &AliasArgs, cli: &Cli, ctx: &Ctx) -> anyhow::Result<()> {
         emit(&line);
     }
     Ok(())
+}
+
+/// Hands the brain to an agent over stdio.
+///
+/// Nothing is printed here, and nothing may be: from this point stdout carries
+/// JSON-RPC frames. The brain is resolved before the transport starts, so a
+/// missing brain is an ordinary error on stderr rather than a client that
+/// connects and then fails every call.
+#[cfg(feature = "mcp")]
+fn cmd_serve(cli: &Cli, ctx: &Ctx) -> anyhow::Result<()> {
+    let b = open(cli, ctx)?;
+    tracing::info!(brain = %b.store().label(), "serving MCP over stdio");
+    brain::mcp::serve(b)
 }
 
 fn cmd_reindex(cli: &Cli, ctx: &Ctx) -> anyhow::Result<()> {
