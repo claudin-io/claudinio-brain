@@ -53,7 +53,12 @@ cargo run --example eval             # recall quality, gated on the baseline
 ```
 
 The tree is warning-clean. A PR that adds warnings will fail CI. CI additionally
-builds on macOS arm64, linux-gnu and linux-musl, and checks against MSRV 1.95.
+builds on macOS arm64, linux-gnu, linux-musl and linux-musl arm64, and checks
+against MSRV 1.95.
+
+A pull request that touches only `*.md` or `docs/` skips all of it — the jobs
+report as skipped rather than not running at all, which is what keeps the
+required checks satisfiable on a documentation-only change.
 
 The MSRV is measured rather than inherited: `cargo metadata` reports 1.88 as the
 highest floor any dependency *declares*, but `libsqlite3-sys` uses `cfg_select`
