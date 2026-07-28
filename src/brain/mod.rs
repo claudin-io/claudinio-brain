@@ -32,6 +32,9 @@ pub use types::{Assertion, Cardinality, Fact, Object, Outcome, Provenance};
 pub struct EntityView {
     pub key: String,
     pub label: String,
+    /// The other names it answers to. Visible because a learned one is a guess,
+    /// and a guess nobody can see is a guess nobody can correct.
+    pub aliases: Vec<crate::alias::Alias>,
     pub facts: Vec<Fact>,
     /// Nearest first. Empty unless a depth was asked for.
     pub neighbours: Vec<Neighbour>,
@@ -57,6 +60,12 @@ pub enum BrainError {
 
     #[error("no fact with id {0}")]
     NoSuchFact(i64),
+
+    #[error("no entity named {name:?}")]
+    NoSuchEntity { name: String },
+
+    #[error("{alias:?} already names {owner:?}")]
+    AliasTaken { alias: String, owner: String },
 
     #[error("cannot make predicate {key:?} single-valued: {open} facts are open at once")]
     CardinalityConflict { key: String, open: i64 },
@@ -486,10 +495,13 @@ impl Brain {
     /// what makes a surprising ranking explainable instead of mysterious.
     pub fn entity(&self, name: &str, when: When, depth: u32) -> Result<Option<EntityView>> {
         let conn = self.conn();
-        let key = norm::key(name);
-        let Some(id) = find_entity(conn, &key)? else {
+        let Some(id) = find_entity(conn, &norm::key(name))? else {
             return Ok(None);
         };
+        // The entity's own key, not the one the caller asked by: looking something
+        // up through an alias must report the thing that was found, or the answer
+        // describes the question instead of the brain.
+        let key = entity_key(conn, id)?;
         let filter = TemporalFilter::for_when(when, None);
 
         let mut binds: Vec<rusqlite::types::Value> = vec![id.into()];
@@ -522,6 +534,7 @@ impl Brain {
         Ok(Some(EntityView {
             key,
             label: entity_label(conn, id)?,
+            aliases: crate::alias::aliases_of(conn, id)?,
             facts,
             neighbours,
         }))
@@ -662,14 +675,20 @@ fn retract_fact(conn: &Connection, id: i64, now: Timestamp, reason: Option<&str>
     Ok(())
 }
 
-fn find_entity(conn: &Connection, key: &str) -> Result<Option<i64>> {
-    // Aliases are checked too, so "Produto A" and a declared nickname resolve to
-    // the same entity.
+/// Which entity a key belongs to -- the lookup that decides where a write lands.
+///
+/// Declared aliases resolve here, so "ACME Corp" and `acme` accumulate one
+/// history. Learned ones deliberately do **not**: they are guesses made from
+/// watching questions, and a guess must never decide where a fact is stored. See
+/// the module comment on [`crate::alias`]; the split is enforced by this `WHERE`
+/// clause and by nothing else, so it is load-bearing.
+pub(crate) fn find_entity(conn: &Connection, key: &str) -> Result<Option<i64>> {
     Ok(conn
         .query_row(
             "SELECT id FROM entity WHERE key = ?
              UNION ALL
-             SELECT entity_id FROM entity_alias WHERE alias_key = ?
+             SELECT entity_id FROM entity_alias
+               WHERE alias_key = ? AND source = 'declared'
              LIMIT 1",
             params![key, key],
             |r| r.get(0),

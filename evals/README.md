@@ -23,6 +23,15 @@ backdated writes, corrections, retractions, relations that changed.
 query and only appears by walking a relation. This suite is what justifies
 having a graph at all rather than a plain vector store.
 
+**`alias.jsonl`** — questions that name something by a name the brain was never
+given. Two fields drive it: `aliases` declares one up front, and `asked` puts a
+question to the brain *with learning on* before the measured query, so the suite
+scores what it picked up and not only what it was told. The warmup runs under the
+same channels as the case, because a configuration that cannot answer a question
+cannot learn from it either — which is why `alias` alone is the weakest row here:
+the cases that must be learned need a channel able to find the fact before the
+name exists.
+
 ## Reading the ablation table
 
 Every suite runs against each channel alone and fused, so the marginal
@@ -35,10 +44,37 @@ The `no-graph` row is `bm25+alias+semantic`: everything except traversal. It is
 permanent, not a one-off measurement, because it is the row the graph channel has
 to keep beating to justify staying.
 
-## Baseline as of Passo 6 (lexical + semantic + graph)
+## What these suites cannot measure
+
+Worth stating, so nobody cites a number these files do not contain.
+
+`MIN_ALIAS_COSINE` — the floor that decides whether a question's term is a name
+for the entity it resolved to — is **not** calibrated here. Sweeping
+0.40/0.50/0.60/0.70 moves no metric on any suite. The floor is still load-bearing;
+its effect is visible in `tests/step7_alias.rs`, where removing it lets `mesmo`
+become a name for `pgbouncer`. When a constant cannot be priced by these suites,
+the source comment says so rather than borrowing their authority.
+
+One case in `alias.jsonl` fails and is expected to keep failing: *a learned name
+anchors a walk one hop out*. The name is learned, the walk starts from the right
+place and the answer is in the result set (R@5 is 1.000), but the anchor's own
+price fact outranks it — three channels agree on the fact the question's words
+match, and only the graph channel votes for the fact one hop past it. Passo 6
+demotes a traversed *edge* for exactly this reason; nothing yet demotes the
+anchor's unrelated facts. Fixing it means introducing a second demotion factor
+and tuning it until one visible case flips, which is the overfitting the
+anti-overfit rule exists to prevent.
+
+## Baseline as of Passo 7 (lexical + semantic + graph + names)
 
 ```
 suite        channels         n     R@1     R@5     R@10     MRR   top1
+alias        alias            8   0.625   0.625    0.625   0.500  0.625
+alias        bm25             8   0.688   1.000    1.000   0.698  0.750
+alias        semantic         8   0.563   1.000    1.000   0.650  0.625
+alias        bm25+alias       8   0.688   1.000    1.000   0.729  0.750
+alias        no-graph         8   0.813   1.000    1.000   0.792  0.875
+alias        all              8   0.813   1.000    1.000   0.792  0.875
 graph        alias            8   0.000   0.000    0.000   0.000  0.000
 graph        bm25             8   0.125   0.750    0.750   0.375  0.125
 graph        semantic         8   0.000   0.875    0.875   0.237  0.000

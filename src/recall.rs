@@ -512,6 +512,11 @@ fn bm25_channel(
 /// Cheap and very precise: it needs no index beyond the one already on
 /// `entity.key`, and it is the layer that handles the cases a purely lexical
 /// score fumbles -- a rare identifier buried in a common-word question.
+///
+/// An entity's own key and a declared alias both count as certain; a learned
+/// alias carries the cosine that earned it, and orders below them. That is the
+/// only place the declared/learned distinction shows up in ranking: when one
+/// question names two entities, the one it named outright is reported first.
 fn alias_channel(
     conn: &Connection,
     text: &str,
@@ -532,14 +537,21 @@ fn alias_channel(
     let filter_sql = filter.bind(&mut binds);
     binds.push((CHANNEL_DEPTH as i64).into());
 
+    // `MAX(w)` over a `UNION ALL`, not a bare `UNION`: an entity matched both by
+    // its key and by an alias would otherwise appear twice and duplicate all of
+    // its facts in the ranking.
     let sql = format!(
         "SELECT f.id FROM fact f
-         WHERE f.entity_id IN (
-           SELECT id FROM entity WHERE key IN ({placeholders})
-           UNION
-           SELECT entity_id FROM entity_alias WHERE alias_key IN ({placeholders})
-         ){filter_sql}
-         ORDER BY f.id
+         JOIN (
+           SELECT entity_id, MAX(w) AS w FROM (
+             SELECT id AS entity_id, 1.0 AS w FROM entity WHERE key IN ({placeholders})
+             UNION ALL
+             SELECT entity_id, weight AS w FROM entity_alias
+               WHERE alias_key IN ({placeholders})
+           ) GROUP BY entity_id
+         ) named ON named.entity_id = f.entity_id
+         WHERE 1 = 1{filter_sql}
+         ORDER BY named.w DESC, f.id
          LIMIT ?"
     );
 
@@ -560,7 +572,7 @@ fn alias_channel(
 /// Accents are preserved here, which means an unaccented question still finds the
 /// fact through BM25 but does not *name* it -- identity stays exact even where
 /// search is forgiving.
-fn normalized_terms(text: &str) -> Vec<String> {
+pub(crate) fn normalized_terms(text: &str) -> Vec<String> {
     let words: Vec<&str> = text.split_whitespace().collect();
     let mut out = Vec::new();
     for (i, w) in words.iter().enumerate() {

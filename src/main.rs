@@ -4,7 +4,8 @@
 
 use brain::brain::{Assertion, Brain, Object};
 use brain::cli::{
-    Cli, Cmd, EntityArgs, GetArgs, InitArgs, LinkArgs, RecallArgs, RememberArgs, parse_when,
+    AliasArgs, Cli, Cmd, EntityArgs, GetArgs, InitArgs, LinkArgs, RecallArgs, RememberArgs,
+    parse_when,
 };
 use brain::clock::SystemClock;
 use brain::config::Config;
@@ -44,6 +45,8 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Cmd::Recall(args) => cmd_recall(args, &cli, &ctx),
         Cmd::History(args) => cmd_history(args, &cli, &ctx),
         Cmd::Entity(args) => cmd_entity(args, &cli, &ctx),
+        Cmd::Alias(args) => cmd_alias(args, &cli, &ctx),
+        Cmd::Reindex => cmd_reindex(&cli, &ctx),
         Cmd::Why { fact_id } => cmd_why(*fact_id, &cli, &ctx),
         Cmd::Retract { fact_id, reason } => cmd_retract(*fact_id, reason.as_deref(), &cli, &ctx),
         Cmd::Predicate { name, cardinality } => cmd_predicate(name, *cardinality, &cli, &ctx),
@@ -183,17 +186,91 @@ fn cmd_recall(args: &RecallArgs, cli: &Cli, ctx: &Ctx) -> anyhow::Result<()> {
     let b = open(cli, ctx)?;
     let hits = b.recall(&q)?;
 
+    // Learning happens after the answer is settled, and never influences it: the
+    // ranking the caller sees is the ranking a replay would produce.
+    let learned = if args.learn {
+        b.learn_alias(&args.query, &hits)?
+    } else {
+        None
+    };
+
     if cli.json {
         emit(&serde_json::to_string_pretty(&answer(
             &b,
-            serde_json::json!({ "query": args.query, "hits": hits }),
+            serde_json::json!({ "query": args.query, "hits": hits, "learned": learned }),
         ))?);
-    } else if hits.is_empty() {
-        emit("(nothing known)");
     } else {
+        if hits.is_empty() {
+            emit("(nothing known)");
+        }
         for h in &hits {
             emit(&h.fact.statement);
         }
+        if let Some(l) = &learned {
+            emit(&format!("(learned: {:?} names {})", l.alias, l.entity));
+        }
+    }
+    Ok(())
+}
+
+fn cmd_alias(args: &AliasArgs, cli: &Cli, ctx: &Ctx) -> anyhow::Result<()> {
+    let b = open(cli, ctx)?;
+
+    let (body, line) = match (&args.alias, args.forget) {
+        (Some(a), true) => {
+            let gone = b.forget_alias(&args.entity, a)?;
+            (
+                serde_json::json!({ "entity": args.entity, "alias": a, "forgotten": gone }),
+                if gone {
+                    format!("{a:?} no longer names {}", args.entity)
+                } else {
+                    format!("{a:?} did not name {}", args.entity)
+                },
+            )
+        }
+        (Some(a), false) => {
+            let alias = b.declare_alias(&args.entity, a)?;
+            (
+                serde_json::json!({ "entity": args.entity, "alias": alias }),
+                format!("{:?} now names {}", alias.key, args.entity),
+            )
+        }
+        (None, _) => {
+            let all = b.aliases(&args.entity)?;
+            let listing = if all.is_empty() {
+                "(no other names)".to_string()
+            } else {
+                all.iter()
+                    .map(|a| format!("{} ({}, {:.2})", a.key, a.source.as_str(), a.weight))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            };
+            (
+                serde_json::json!({ "entity": args.entity, "aliases": all }),
+                listing,
+            )
+        }
+    };
+
+    if cli.json {
+        emit(&serde_json::to_string_pretty(&answer(&b, body))?);
+    } else {
+        emit(&line);
+    }
+    Ok(())
+}
+
+fn cmd_reindex(cli: &Cli, ctx: &Ctx) -> anyhow::Result<()> {
+    let b = open(cli, ctx)?;
+    let n = b.reindex()?;
+
+    if cli.json {
+        emit(&serde_json::to_string_pretty(&answer(
+            &b,
+            serde_json::json!({ "reindexed": n }),
+        ))?);
+    } else {
+        emit(&format!("reindexed {n} embeddings"));
     }
     Ok(())
 }
@@ -251,6 +328,9 @@ fn cmd_entity(args: &EntityArgs, cli: &Cli, ctx: &Ctx) -> anyhow::Result<()> {
         ))?);
     } else {
         emit(&format!("{} ({})", view.label, view.key));
+        for a in &view.aliases {
+            emit(&format!("  also: {} ({})", a.key, a.source.as_str()));
+        }
         for f in &view.facts {
             emit(&format!("  {}", f.statement));
         }

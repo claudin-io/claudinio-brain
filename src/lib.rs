@@ -8,6 +8,7 @@
 // allowed to touch stdout.
 #![deny(clippy::print_stdout, clippy::dbg_macro)]
 
+pub mod alias;
 pub mod brain;
 pub mod cli;
 pub mod clock;

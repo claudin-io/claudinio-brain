@@ -39,6 +39,16 @@ struct EvalFact {
 struct EvalCase {
     name: String,
     facts: Vec<EvalFact>,
+    /// `[entity, alias]` pairs declared before anything is asked.
+    #[serde(default)]
+    aliases: Vec<[String; 2]>,
+    /// Questions asked *with learning on* before the measured one, so a suite can
+    /// score what the brain picked up rather than only what it was told. They run
+    /// under the same channels as the case itself: a configuration that cannot
+    /// answer a question cannot learn from it either, and that dependency belongs
+    /// in the ablation table rather than hidden behind a privileged warmup.
+    #[serde(default)]
+    asked: Vec<String>,
     query: String,
     #[serde(default)]
     as_of: Option<String>,
@@ -69,7 +79,7 @@ fn main() -> anyhow::Result<()> {
     let update = args.iter().any(|a| a == "--update-baseline");
     let show_misses = args.iter().any(|a| a == "--misses");
 
-    let suites = ["retrieval", "temporal", "graph"];
+    let suites = ["retrieval", "temporal", "graph", "alias"];
     let ablations: Vec<(&str, Vec<Channel>)> = vec![
         ("bm25", vec![Channel::Bm25]),
         ("alias", vec![Channel::Alias]),
@@ -195,6 +205,15 @@ fn run_suite(
             a.valid_from = f.at.as_deref().map(parse_when).transpose()?;
             let outcome = b.remember(&a)?;
             labels.insert(f.id.clone(), outcome.fact().id);
+        }
+
+        for [entity, alias] in &case.aliases {
+            b.declare_alias(entity, alias)?;
+        }
+        for question in &case.asked {
+            let warmup = RecallQuery::new(question).limit(10).channels(channels);
+            let hits = b.recall(&warmup)?;
+            b.learn_alias(question, &hits)?;
         }
 
         let mut q = RecallQuery::new(&case.query).limit(10).channels(channels);

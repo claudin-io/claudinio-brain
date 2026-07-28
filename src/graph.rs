@@ -276,7 +276,13 @@ pub fn predicates(
     Ok(rows.collect::<rusqlite::Result<BTreeMap<i64, String>>>()?)
 }
 
-/// Entity ids the text names outright, by key or by declared alias.
+/// Entity ids the text names outright, by key or by any alias.
+///
+/// Learned aliases count here, unlike in [`crate::brain::find_entity`]. Anchoring
+/// is a retrieval decision -- a wrong anchor costs one extra branch of a walk
+/// that the ranking then discards -- so it can use a guess where identity cannot.
+/// It is also where a learned name pays for itself: an entity the question names
+/// only by a nickname is an entity the walk can start from.
 pub fn named_entities(conn: &Connection, keys: &[String]) -> Result<Vec<i64>, BrainError> {
     if keys.is_empty() {
         return Ok(Vec::new());

@@ -90,6 +90,12 @@ pub enum Cmd {
         reason: Option<String>,
     },
 
+    /// Give an entity another name, list the names it has, or take one away.
+    Alias(AliasArgs),
+
+    /// Rebuild the vector index from the stored embeddings.
+    Reindex,
+
     /// Fix a predicate's cardinality.
     Predicate {
         name: String,
@@ -165,6 +171,25 @@ pub struct RecallArgs {
 
     #[arg(long)]
     pub scope: Option<String>,
+
+    /// Let the brain keep the name this question used, if the answer is
+    /// unambiguous. Off by default: a read that writes is a read that cannot be
+    /// replayed.
+    #[arg(long)]
+    pub learn: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct AliasArgs {
+    /// The entity being named. Must already exist.
+    pub entity: String,
+
+    /// The name to add. Omit to list the names this entity already answers to.
+    pub alias: Option<String>,
+
+    /// Remove the name instead of adding it.
+    #[arg(long, requires = "alias")]
+    pub forget: bool,
 }
 
 #[derive(Args, Debug)]
