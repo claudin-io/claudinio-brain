@@ -1,0 +1,56 @@
+name: Audit
+
+# Vulnerability scanning lives in its own workflow, deliberately separate from
+# ci.yml. Advisories are published out of band, with no relation to the PR under
+# review -- folding this into CI would mean a CVE disclosed on a Saturday blocks
+# every unrelated PR until someone triages it. Here it runs on a schedule, on
+# changes to the dependency graph, and on demand, and it is *not* a required
+# status check.
+on:
+  schedule:
+    # Mondays at 06:00 UTC.
+    - cron: '0 6 * * 1'
+  pull_request:
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/audit.yml'
+  workflow_dispatch:
+
+# No secrets are used by this workflow.
+permissions:
+  contents: read
+
+concurrency:
+  group: audit-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cargo:
+    name: Cargo (RustSec advisories)
+    runs-on: ubuntu-latest
+    steps:
+      # Pinned by commit, unlike ci.yml's tags. A workflow whose job is to catch
+      # a compromised dependency should not itself resolve a mutable tag.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Prebuilt binary. `cargo install cargo-audit` would dominate the runtime
+      # of a job whose actual work takes a couple of seconds.
+      - uses: taiki-e/install-action@41049aa56687c35e0afa74eed4f09cec4f9afabf # v2.85.2
+        with:
+          tool: cargo-audit
+
+      # Reads Cargo.lock only -- nothing is compiled, so this needs neither a C
+      # toolchain nor the embedding weights that ci.yml links.
+      #
+      # Deliberately no `--deny warnings`. That would also fail on "unmaintained"
+      # and "yanked" advisories, which are hygiene signals rather than
+      # vulnerabilities, and this tree has one today: RUSTSEC-2024-0436, `paste`
+      # unmaintained, reached through `tokenizers 0.21.4`. That version is pinned
+      # on purpose (see .github/dependabot.yml -- it is a feature-unification
+      # lever, not a dependency), so the warning cannot be cleared here and will
+      # not clear until model2vec-rs moves. A job that is permanently red stops
+      # being read, and then the real advisory arrives and nobody looks. Default
+      # behaviour fails on actual vulnerabilities and prints the rest.
+      - name: cargo audit
+        run: cargo audit
