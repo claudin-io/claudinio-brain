@@ -237,13 +237,18 @@ fn open_sealed(path: &Path) -> Result<Connection> {
 fn register_extensions() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| unsafe {
+        // `c_char`, not `i8`. The error message parameter is a `char**` in C, and
+        // C's `char` is signed on x86_64 and on Apple silicon but *unsigned* on
+        // aarch64 Linux -- so spelling it `i8` compiles almost everywhere and
+        // fails to compile on an ARM server. A transmute makes that a hard error
+        // rather than a silent mismatch, which is the one good thing about it.
         rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute::<
             *const (),
             unsafe extern "C" fn(
                 *mut rusqlite::ffi::sqlite3,
-                *mut *mut i8,
+                *mut *mut std::ffi::c_char,
                 *const rusqlite::ffi::sqlite3_api_routines,
-            ) -> i32,
+            ) -> std::ffi::c_int,
         >(
             sqlite_vec::sqlite3_vec_init as *const ()
         )));
