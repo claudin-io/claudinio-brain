@@ -2,9 +2,13 @@
 name = "brain"
 version = "0.1.0"
 edition = "2024"
-# 1.88 is the real floor: schemars -> darling 0.23 requires it. Declaring 1.85
-# (edition 2024's own floor) would be a lie that only breaks on someone else's CI.
-rust-version = "1.88"
+# Measured, not inherited. `cargo metadata` reports 1.88 as the highest floor any
+# dependency *declares* (schemars -> darling 0.23), but libsqlite3-sys 0.38.1 uses
+# `cfg_select` in its build script without declaring an MSRV at all, and that
+# macro was unstable through 1.94. Verified by building on each toolchain: 1.94
+# fails, 1.95 passes. Declaring 1.88 here would be a lie that only breaks on
+# someone else's CI -- which is exactly how this was found.
+rust-version = "1.95"
 description = "Bitemporal knowledge-graph memory for AI agents. One binary, one file, no server."
 license = "MIT"
 

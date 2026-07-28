@@ -27,8 +27,57 @@ accepting the C++ dep — fine on macOS, painful for musl cross-builds.
 
 ## MSRV
 
-Declared `rust-version = "1.88"`, not edition 2024's 1.85 floor: `schemars` →
-`darling 0.23` requires 1.88.
+Declared `rust-version = "1.95"`, and the number came from building, not from
+reading manifests.
+
+`cargo metadata` reports 1.88 as the highest floor any dependency *declares*
+(`schemars` → `darling 0.23`), and that is what was declared originally. It was
+wrong. `libsqlite3-sys 0.38.1` calls `cfg_select!` in its build script and
+declares no `rust-version` at all, so nothing in the metadata reflects it.
+`cfg_select` was unstable through 1.94:
+
+| toolchain | result |
+|---|---|
+| 1.88 – 1.94 | `error[E0658]: use of unstable library feature 'cfg_select'` |
+| 1.95, 1.96 | builds |
+
+There is no downgrade path: `rusqlite 0.40.1` requires `libsqlite3-sys ^0.38.1`,
+and 0.38.0 is not a resolvable alternative.
+
+The general lesson, which cost the first CI run this repository ever had: a
+declared MSRV is a claim about a *build*, and the only way to check it is to run
+one. A build-script dependency can raise the real floor without any manifest
+saying so.
+
+## musl and `sqlite-vec`'s BSD typedefs
+
+`sqlite-vec.c` lines 68-70 are:
+
+```c
+#ifndef _WIN32
+#ifndef __EMSCRIPTEN__
+#ifndef __COSMOPOLITAN__
+#ifndef __wasi__
+typedef u_int8_t uint8_t;
+typedef u_int16_t uint16_t;
+typedef u_int64_t uint64_t;
+#endif
+```
+
+Nothing in that guard excludes musl, and musl does not declare the BSD spellings,
+so the target dies at `unknown type name 'u_int8_t'` before any Rust compiles.
+
+`-D_GNU_SOURCE` is the obvious guess and it is wrong — measured, not assumed.
+Even with the BSD names declared, the typedef still collides with `stdint.h`'s
+`uint8_t`. What works is mapping the BSD names onto the standard ones, which
+turns those three lines into self-typedefs, legal since C11:
+
+```
+CFLAGS_x86_64_unknown_linux_musl=-Du_int8_t=uint8_t -Du_int16_t=uint16_t -Du_int64_t=uint64_t
+```
+
+Those three lines are the only occurrences of `u_int` in the file, so the
+substitution cannot reach anything else.
 
 ## SQLite gotchas found the hard way
 

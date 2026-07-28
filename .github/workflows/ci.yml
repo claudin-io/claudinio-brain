@@ -47,6 +47,18 @@ jobs:
       - if: matrix.target == 'x86_64-unknown-linux-musl'
         run: sudo apt-get update && sudo apt-get install -y musl-tools
 
+      # sqlite-vec.c:68-70 does `typedef u_int8_t uint8_t;` guarded only against
+      # _WIN32, __EMSCRIPTEN__, __COSMOPOLITAN__ and __wasi__ -- so on musl it
+      # fires, and musl does not declare the BSD spellings. Mapping them to the
+      # standard names makes those three lines self-typedefs, which C11 permits.
+      # (-D_GNU_SOURCE does not help: even with the BSD names declared, the
+      # typedef still collides with stdint.h's uint8_t.) Those are the only three
+      # occurrences of `u_int` in the file, so the substitution reaches nothing
+      # else.
+      - if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: |
+          echo "CFLAGS_x86_64_unknown_linux_musl=-Du_int8_t=uint8_t -Du_int16_t=uint16_t -Du_int64_t=uint64_t" >> "$GITHUB_ENV"
+
       - run: cargo test --target ${{ matrix.target }}
       # The core must stay buildable without rmcp/tokio.
       - run: cargo check --target ${{ matrix.target }} --no-default-features
@@ -65,6 +77,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@1.88.0
+      - uses: dtolnay/rust-toolchain@1.95.0
       - uses: Swatinem/rust-cache@v2
       - run: cargo check --all-targets

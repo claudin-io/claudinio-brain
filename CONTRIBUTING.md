@@ -21,7 +21,7 @@ what a mergeable change looks like.
 
 | Tool | Version |
 |---|---|
-| [Rust](https://rustup.rs) | 1.88+, edition 2024 |
+| [Rust](https://rustup.rs) | 1.95+, edition 2024 |
 | A C compiler | for `onig`, bundled SQLite and `sqlite-vec` |
 
 A **C++** compiler is deliberately not required. `tokenizers` is declared as a
@@ -53,7 +53,12 @@ cargo run --example eval             # recall quality, gated on the baseline
 ```
 
 The tree is warning-clean. A PR that adds warnings will fail CI. CI additionally
-builds on macOS arm64, linux-gnu and linux-musl, and checks against MSRV 1.88.
+builds on macOS arm64, linux-gnu and linux-musl, and checks against MSRV 1.95.
+
+The MSRV is measured rather than inherited: `cargo metadata` reports 1.88 as the
+highest floor any dependency *declares*, but `libsqlite3-sys` uses `cfg_select`
+in its build script without declaring an MSRV at all. If you raise it, verify by
+building on the toolchain you are declaring, not by reading the manifests.
 
 ## Tests and evals are different things
 
