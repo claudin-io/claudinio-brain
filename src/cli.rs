@@ -77,6 +77,9 @@ pub enum Cmd {
     /// Show the full trajectory of a subject/predicate pair.
     History(GetArgs),
 
+    /// Show what is known about an entity, and what it connects to.
+    Entity(EntityArgs),
+
     /// Show where a fact came from and what became of it.
     Why { fact_id: i64 },
 
@@ -162,6 +165,23 @@ pub struct RecallArgs {
 
     #[arg(long)]
     pub scope: Option<String>,
+}
+
+#[derive(Args, Debug)]
+pub struct EntityArgs {
+    pub name: String,
+
+    /// Also walk the relations out from it.
+    #[arg(long)]
+    pub neighbors: bool,
+
+    /// How many hops to walk. Only meaningful with --neighbors.
+    #[arg(long, default_value_t = crate::graph::MAX_DEPTH, value_name = "N")]
+    pub depth: u32,
+
+    /// Show the neighbourhood as it stood at this instant.
+    #[arg(long, value_name = "WHEN")]
+    pub as_of: Option<String>,
 }
 
 #[derive(Args, Debug)]

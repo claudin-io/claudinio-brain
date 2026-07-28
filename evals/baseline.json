@@ -10,11 +10,11 @@
     },
     "all": {
       "cases": 8,
-      "recall@1": 0.0,
+      "recall@1": 0.875,
       "recall@5": 1.0,
       "recall@10": 1.0,
-      "mrr": 0.358,
-      "top1_accuracy": 0.0
+      "mrr": 0.938,
+      "top1_accuracy": 0.875
     },
     "bm25": {
       "cases": 8,
@@ -30,6 +30,14 @@
       "recall@5": 0.75,
       "recall@10": 0.75,
       "mrr": 0.313,
+      "top1_accuracy": 0.0
+    },
+    "no-graph": {
+      "cases": 8,
+      "recall@1": 0.0,
+      "recall@5": 1.0,
+      "recall@10": 1.0,
+      "mrr": 0.358,
       "top1_accuracy": 0.0
     },
     "semantic": {
@@ -48,7 +56,7 @@
       "recall@5": 0.7,
       "recall@10": 0.7,
       "mrr": 0.65,
-      "top1_accuracy": 0.65
+      "top1_accuracy": 0.7
     },
     "all": {
       "cases": 20,
@@ -56,7 +64,7 @@
       "recall@5": 1.0,
       "recall@10": 1.0,
       "mrr": 0.95,
-      "top1_accuracy": 0.95
+      "top1_accuracy": 1.0
     },
     "bm25": {
       "cases": 20,
@@ -64,7 +72,7 @@
       "recall@5": 1.0,
       "recall@10": 1.0,
       "mrr": 0.95,
-      "top1_accuracy": 0.95
+      "top1_accuracy": 1.0
     },
     "bm25+alias": {
       "cases": 20,
@@ -72,7 +80,15 @@
       "recall@5": 1.0,
       "recall@10": 1.0,
       "mrr": 0.95,
-      "top1_accuracy": 0.95
+      "top1_accuracy": 1.0
+    },
+    "no-graph": {
+      "cases": 20,
+      "recall@1": 0.975,
+      "recall@5": 1.0,
+      "recall@10": 1.0,
+      "mrr": 0.95,
+      "top1_accuracy": 1.0
     },
     "semantic": {
       "cases": 20,
@@ -80,7 +96,7 @@
       "recall@5": 1.0,
       "recall@10": 1.0,
       "mrr": 0.842,
-      "top1_accuracy": 0.8
+      "top1_accuracy": 0.85
     }
   },
   "temporal": {
@@ -90,7 +106,7 @@
       "recall@5": 0.952,
       "recall@10": 0.952,
       "mrr": 0.905,
-      "top1_accuracy": 0.905
+      "top1_accuracy": 0.952
     },
     "all": {
       "cases": 21,
@@ -98,7 +114,7 @@
       "recall@5": 1.0,
       "recall@10": 1.0,
       "mrr": 0.952,
-      "top1_accuracy": 0.952
+      "top1_accuracy": 1.0
     },
     "bm25": {
       "cases": 21,
@@ -106,7 +122,7 @@
       "recall@5": 1.0,
       "recall@10": 1.0,
       "mrr": 0.905,
-      "top1_accuracy": 0.857
+      "top1_accuracy": 0.905
     },
     "bm25+alias": {
       "cases": 21,
@@ -114,7 +130,15 @@
       "recall@5": 1.0,
       "recall@10": 1.0,
       "mrr": 0.952,
-      "top1_accuracy": 0.952
+      "top1_accuracy": 1.0
+    },
+    "no-graph": {
+      "cases": 21,
+      "recall@1": 0.909,
+      "recall@5": 1.0,
+      "recall@10": 1.0,
+      "mrr": 0.952,
+      "top1_accuracy": 1.0
     },
     "semantic": {
       "cases": 21,
@@ -122,7 +146,7 @@
       "recall@5": 1.0,
       "recall@10": 1.0,
       "mrr": 0.952,
-      "top1_accuracy": 0.952
+      "top1_accuracy": 1.0
     }
   }
 }

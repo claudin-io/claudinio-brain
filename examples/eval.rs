@@ -67,6 +67,7 @@ struct Metrics {
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let update = args.iter().any(|a| a == "--update-baseline");
+    let show_misses = args.iter().any(|a| a == "--misses");
 
     let suites = ["retrieval", "temporal", "graph"];
     let ablations: Vec<(&str, Vec<Channel>)> = vec![
@@ -74,10 +75,18 @@ fn main() -> anyhow::Result<()> {
         ("alias", vec![Channel::Alias]),
         ("semantic", vec![Channel::Semantic]),
         ("bm25+alias", vec![Channel::Bm25, Channel::Alias]),
+        // Everything except traversal. This is the row the graph channel has to
+        // beat to justify itself, so it stays in the table permanently rather
+        // than being measured once and forgotten.
+        (
+            "no-graph",
+            vec![Channel::Bm25, Channel::Alias, Channel::Semantic],
+        ),
         ("all", Channel::ALL.to_vec()),
     ];
 
     let mut results: BTreeMap<String, BTreeMap<String, Metrics>> = BTreeMap::new();
+    let mut misses: Vec<String> = Vec::new();
     for suite in suites {
         let cases = load_suite(suite)?;
         if cases.is_empty() {
@@ -85,12 +94,25 @@ fn main() -> anyhow::Result<()> {
         }
         let mut per_channel = BTreeMap::new();
         for (label, channels) in &ablations {
-            per_channel.insert(label.to_string(), run_suite(&cases, channels)?);
+            // Only the full configuration reports its misses: those are the cases
+            // that are actually still wrong, as opposed to wrong on purpose
+            // because a channel was switched off.
+            let mut into = (*label == "all" && show_misses).then_some(&mut misses);
+            per_channel.insert(label.to_string(), run_suite(&cases, channels, &mut into)?);
         }
         results.insert(suite.to_string(), per_channel);
     }
 
     print_table(&results);
+    if show_misses {
+        println!(
+            "\ncases whose top hit is not an expected answer ({}):",
+            misses.len()
+        );
+        for m in &misses {
+            println!("  {m}");
+        }
+    }
 
     let baseline_path = std::path::Path::new("evals/baseline.json");
     if update {
@@ -140,7 +162,11 @@ fn load_suite(name: &str) -> anyhow::Result<Vec<EvalCase>> {
     Ok(out)
 }
 
-fn run_suite(cases: &[EvalCase], channels: &[Channel]) -> anyhow::Result<Metrics> {
+fn run_suite(
+    cases: &[EvalCase],
+    channels: &[Channel],
+    misses: &mut Option<&mut Vec<String>>,
+) -> anyhow::Result<Metrics> {
     let mut m = Metrics {
         cases: cases.len(),
         ..Default::default()
@@ -179,7 +205,8 @@ fn run_suite(cases: &[EvalCase], channels: &[Channel]) -> anyhow::Result<Metrics
             q = q.history();
         }
 
-        let got: Vec<i64> = b.recall(&q)?.into_iter().map(|h| h.fact.id).collect();
+        let hits = b.recall(&q)?;
+        let got: Vec<i64> = hits.iter().map(|h| h.fact.id).collect();
         let want: Vec<i64> = case
             .expect
             .iter()
@@ -195,8 +222,24 @@ fn run_suite(cases: &[EvalCase], channels: &[Channel]) -> anyhow::Result<Metrics
         m.recall_5 += recall_at(&got, &want, 5);
         m.recall_10 += recall_at(&got, &want, 10);
         m.mrr += reciprocal_rank(&got, &want);
-        if got.first().is_some_and(|top| want.contains(top)) {
+        // A case that expects nothing is answered correctly by returning nothing.
+        // Scoring that as a top-1 failure -- which this did until the graph
+        // channel's miss list made it visible -- understates every suite that
+        // contains a "the brain should stay quiet" case.
+        let correct = match want.is_empty() {
+            true => got.is_empty(),
+            false => got.first().is_some_and(|top| want.contains(top)),
+        };
+        if correct {
             m.top1_accuracy += 1.0;
+        } else if let Some(out) = misses.as_deref_mut() {
+            let top = hits
+                .first()
+                .map_or("(nothing)".to_string(), |h| h.fact.statement.clone());
+            out.push(format!(
+                "{}\n      asked: {}\n      got:   {top}",
+                case.name, case.query
+            ));
         }
     }
 

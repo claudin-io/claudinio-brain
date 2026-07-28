@@ -3,12 +3,14 @@
 #![deny(clippy::print_stdout, clippy::dbg_macro)]
 
 use brain::brain::{Assertion, Brain, Object};
-use brain::cli::{Cli, Cmd, GetArgs, InitArgs, LinkArgs, RecallArgs, RememberArgs, parse_when};
+use brain::cli::{
+    Cli, Cmd, EntityArgs, GetArgs, InitArgs, LinkArgs, RecallArgs, RememberArgs, parse_when,
+};
 use brain::clock::SystemClock;
 use brain::config::Config;
 use brain::ids::UuidV7Gen;
 use brain::locate::Ctx;
-use brain::recall::RecallQuery;
+use brain::recall::{RecallQuery, When};
 use brain::store::Store;
 use clap::Parser;
 
@@ -41,6 +43,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Cmd::Get(args) => cmd_get(args, &cli, &ctx),
         Cmd::Recall(args) => cmd_recall(args, &cli, &ctx),
         Cmd::History(args) => cmd_history(args, &cli, &ctx),
+        Cmd::Entity(args) => cmd_entity(args, &cli, &ctx),
         Cmd::Why { fact_id } => cmd_why(*fact_id, &cli, &ctx),
         Cmd::Retract { fact_id, reason } => cmd_retract(*fact_id, reason.as_deref(), &cli, &ctx),
         Cmd::Predicate { name, cardinality } => cmd_predicate(name, *cardinality, &cli, &ctx),
@@ -214,6 +217,55 @@ fn cmd_history(args: &GetArgs, cli: &Cli, ctx: &Ctx) -> anyhow::Result<()> {
                 (None, None) => "current".to_string(),
             };
             emit(&format!("[{}] {}  ({until})", f.valid_from, f.statement));
+        }
+    }
+    Ok(())
+}
+
+fn cmd_entity(args: &EntityArgs, cli: &Cli, ctx: &Ctx) -> anyhow::Result<()> {
+    let when = match args.as_of.as_deref() {
+        Some(w) => When::AsOf(parse_when(w)?),
+        None => When::Now,
+    };
+    // Depth zero unless asked: walking is the expensive part, and `brain entity`
+    // is also how one just looks something up.
+    let depth = if args.neighbors { args.depth } else { 0 };
+
+    let b = open(cli, ctx)?;
+    let Some(view) = b.entity(&args.name, when, depth)? else {
+        if cli.json {
+            emit(&serde_json::to_string_pretty(&answer(
+                &b,
+                serde_json::json!({ "entity": serde_json::Value::Null }),
+            ))?);
+        } else {
+            emit(&format!("(no entity named {:?})", args.name));
+        }
+        return Ok(());
+    };
+
+    if cli.json {
+        emit(&serde_json::to_string_pretty(&answer(
+            &b,
+            serde_json::json!({ "entity": view }),
+        ))?);
+    } else {
+        emit(&format!("{} ({})", view.label, view.key));
+        for f in &view.facts {
+            emit(&format!("  {}", f.statement));
+        }
+        if args.neighbors {
+            emit("  neighbours:");
+            if view.neighbours.is_empty() {
+                emit("    (none)");
+            }
+            for n in &view.neighbours {
+                let hop = if n.hops == 1 { "hop" } else { "hops" };
+                emit(&format!(
+                    "    {} ({} {hop}, via {})",
+                    n.entity, n.hops, n.via
+                ));
+            }
         }
     }
     Ok(())

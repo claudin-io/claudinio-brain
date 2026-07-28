@@ -2,9 +2,9 @@
 // by walking a relation. This suite is what justifies having a graph at all
 // rather than a plain vector store.
 //
-// It scores near zero until Passo 6 adds graph expansion. That is deliberate:
-// the measurement exists before the feature, so the feature's value is a number
-// rather than an opinion.
+// It scored 0.000 top-1 until Passo 6 added graph expansion, and 0.875 after.
+// That the measurement existed before the feature is deliberate: the feature's
+// value arrives as a number rather than as an opinion.
 {"name":"one hop: supplier's country","facts":[{"id":"link","subject":"produto_a","predicate":"fornecido_por","entity":"acme"},{"id":"answer","subject":"acme","predicate":"pais","text":"brasil"},{"id":"n1","subject":"produto_b","predicate":"fornecido_por","entity":"globex"},{"id":"n2","subject":"globex","predicate":"pais","text":"mexico"},{"id":"n3","subject":"produto_c","predicate":"preco","num":7}],"query":"de que pais vem o produto_a","expect":["answer"]}
 {"name":"one hop: service owner's team","facts":[{"id":"link","subject":"api_gateway","predicate":"mantido_por","entity":"maria"},{"id":"answer","subject":"maria","predicate":"time","text":"plataforma"},{"id":"n1","subject":"worker","predicate":"mantido_por","entity":"joao"},{"id":"n2","subject":"joao","predicate":"time","text":"dados"},{"id":"n3","subject":"cache","predicate":"ttl","num":300}],"query":"qual time cuida do api_gateway","expect":["answer"]}
 {"name":"one hop: dependency's version","facts":[{"id":"link","subject":"servico_pagamento","predicate":"depende_de","entity":"postgres"},{"id":"answer","subject":"postgres","predicate":"versao","text":"16.2"},{"id":"n1","subject":"servico_email","predicate":"depende_de","entity":"redis"},{"id":"n2","subject":"redis","predicate":"versao","text":"7.4"},{"id":"n3","subject":"produto_a","predicate":"preco","num":20}],"query":"que versao o servico_pagamento usa","expect":["answer"]}

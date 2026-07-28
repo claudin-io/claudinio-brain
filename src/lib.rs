@@ -13,6 +13,7 @@ pub mod cli;
 pub mod clock;
 pub mod config;
 pub mod embed;
+pub mod graph;
 pub mod ids;
 pub mod index;
 pub mod locate;

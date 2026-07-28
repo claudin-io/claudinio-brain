@@ -88,8 +88,13 @@ CREATE INDEX fact_timeline ON fact(entity_id, predicate, valid_from);
 CREATE INDEX fact_open     ON fact(entity_id, predicate) WHERE valid_to IS NULL;
 CREATE INDEX fact_inbound  ON fact(object_entity_id) WHERE object_entity_id IS NOT NULL;
 
--- The graph, as a view over the facts that point at an entity. Traversal runs
--- over this with a recursive CTE (Passo 6).
+-- The graph, as a view over the facts that point at an entity: the read model for
+-- anyone opening this file in a sqlite3 shell.
+--
+-- Traversal in `graph.rs` inlines the same predicate over `fact` rather than
+-- selecting from here, so that it can apply the *identical* temporal and scope
+-- filter retrieval uses. Two filters that merely look alike drift; one shared
+-- definition cannot.
 CREATE VIEW edge AS
   SELECT id, entity_id AS src, object_entity_id AS dst, predicate AS rel,
          valid_from, valid_to, retracted_at, confidence

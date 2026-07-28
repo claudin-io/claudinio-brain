@@ -1,20 +1,28 @@
 //! Finding facts.
 //!
-//! Two independent channels retrieve candidates, and reciprocal rank fusion
-//! combines them. The point of fusing rather than picking one is that agreement
-//! between independent signals is itself evidence: a fact both channels surface
-//! is far more likely to be the answer than one either finds alone.
+//! Independent channels retrieve candidates, and reciprocal rank fusion combines
+//! them. The point of fusing rather than picking one is that agreement between
+//! independent signals is itself evidence: a fact several channels surface is far
+//! more likely to be the answer than one any of them finds alone.
+//!
+//! Three channels retrieve by content -- words, entity names, meaning. The fourth
+//! retrieves by *structure*: it walks the graph out from whatever the question
+//! names and reports what the walk found. That one is the reason this is a brain
+//! and not a search index, because the answer to "which country does produto_a
+//! come from" is not stored anywhere near produto_a. It is one hop away, and the
+//! relation is the map.
 //!
 //! Everything is filtered temporally *before* ranking, so recall answers with
 //! what is true, not with everything ever recorded.
 
 use crate::brain::{Brain, BrainError, Fact};
+use crate::graph;
 use crate::index::{Vec0Index, VecFilter, VectorIndex};
 use crate::norm;
 use jiff::Timestamp;
 use rusqlite::{Connection, params_from_iter};
 use serde::Serialize;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Which retriever found a hit. Carried on every result so per-channel
 /// contribution is measurable, and so a surprising ranking is debuggable.
@@ -28,10 +36,23 @@ pub enum Channel {
     /// Nearest neighbours in static-embedding space. The only channel that can
     /// match a paraphrase sharing no words with the fact.
     Semantic,
+    /// Facts found by walking relations out from what the question names. The
+    /// only channel that can answer with a fact stored nowhere near the words of
+    /// the question.
+    Graph,
 }
 
 impl Channel {
-    pub const ALL: &'static [Channel] = &[Channel::Bm25, Channel::Alias, Channel::Semantic];
+    pub const ALL: &'static [Channel] = &[
+        Channel::Bm25,
+        Channel::Alias,
+        Channel::Semantic,
+        Channel::Graph,
+    ];
+
+    /// The channels that retrieve from a fact's own content. The graph channel
+    /// is not one of them: it expands what these find.
+    const CONTENT: &'static [Channel] = &[Channel::Bm25, Channel::Alias, Channel::Semantic];
 }
 
 /// How the timeline is filtered.
@@ -109,6 +130,31 @@ const RRF_K: f64 = 60.0;
 /// How many candidates each channel contributes before fusion.
 const CHANNEL_DEPTH: usize = 50;
 
+/// How many fused hits seed graph expansion when the question names no entity
+/// the brain recognizes.
+const SEED_DEPTH: usize = 8;
+
+/// What a fused score is multiplied by when the fact is an edge the walk crossed
+/// to reach something better.
+///
+/// An edge that was traversed is a *road*, and roads are rarely the destination:
+/// "produto_a fornecido_por acme" is how the brain got to acme's country, not an
+/// answer to which country that is. Without this, the bridge wins on agreement
+/// alone -- it is the fact that literally contains the words of the question --
+/// and the answer sits at rank two forever, which is exactly what the graph suite
+/// measured before this step.
+///
+/// A bridge is spared whenever the question names its predicate, because then the
+/// relation *is* what was asked for ("quem fornece o produto_a"). Demotion is a
+/// scale rather than an exile so that a bridge still outranks the noise below it.
+///
+/// Calibrated, not guessed. Sweeping 1.0/0.75/0.5/0.25 moves graph top-1 through
+/// 0.000/0.625/0.750/0.750 while retrieval and temporal never budge. 1.0 is the
+/// control: with expansion on but demotion off, Recall@10 is already 1.000 and
+/// top-1 is still 0.000 -- the walk had found the answer all along and the bridge
+/// was sitting on it. 0.5 is the mildest value that reaches the ceiling.
+const BRIDGE_DEMOTION: f64 = 0.5;
+
 /// Minimum cosine similarity for a semantic hit to count.
 ///
 /// Nearest-neighbour search always returns *something* -- there is no such thing
@@ -128,20 +174,26 @@ impl Brain {
         let conn = self.store().conn();
         let filter = TemporalFilter::new(q);
 
-        // Rank per channel, then fuse. `ranked` maps fact id -> (rrf score,
+        // Rank per channel, then fuse. `fused` maps fact id -> (rrf score,
         // channels), in a BTreeMap so iteration order never varies by run.
         let mut fused: BTreeMap<i64, (f64, Vec<Channel>)> = BTreeMap::new();
-        for channel in Channel::ALL.iter().filter(|c| q.channels.contains(c)) {
+        for channel in Channel::CONTENT.iter().filter(|c| q.channels.contains(c)) {
             let ids = match channel {
                 Channel::Bm25 => bm25_channel(conn, &q.text, &filter)?,
                 Channel::Alias => alias_channel(conn, &q.text, &filter)?,
                 Channel::Semantic => self.semantic_channel(&q.text, q)?,
+                Channel::Graph => unreachable!("the graph channel expands, it does not retrieve"),
             };
-            for (rank, id) in ids.into_iter().enumerate() {
-                let e = fused.entry(id).or_insert((0.0, Vec::new()));
-                e.0 += 1.0 / (RRF_K + (rank + 1) as f64);
-                e.1.push(*channel);
-            }
+            fuse(&mut fused, ids, *channel);
+        }
+
+        // The graph runs last because it expands what the others found. Its own
+        // anchors come first from the question, and only fall back to the fused
+        // head when the question names nothing the brain knows by name.
+        if q.channels.contains(&Channel::Graph) {
+            let walk = self.walk(conn, q, &filter, &fused)?;
+            fuse(&mut fused, walk.ranked.clone(), Channel::Graph);
+            demote_bridges(&mut fused, &walk);
         }
 
         let mut order: Vec<(i64, f64, Vec<Channel>)> = fused
@@ -169,6 +221,130 @@ impl Brain {
         }
         Ok(hits)
     }
+}
+
+/// Adds one channel's ranking to the fusion.
+fn fuse(fused: &mut BTreeMap<i64, (f64, Vec<Channel>)>, ids: Vec<i64>, channel: Channel) {
+    for (rank, id) in ids.into_iter().enumerate() {
+        let e = fused.entry(id).or_insert((0.0, Vec::new()));
+        e.0 += 1.0 / (RRF_K + (rank + 1) as f64);
+        e.1.push(channel);
+    }
+}
+
+/// What one graph expansion produced, and everything the re-rank needs to know
+/// about how it got there.
+struct Walk {
+    /// Facts of reached entities, best first.
+    ranked: Vec<i64>,
+    /// Edge facts lying on the route to something the walk is reporting.
+    roads: BTreeSet<i64>,
+    /// The predicate of each crossed edge, so a question that asks for the
+    /// relation itself can spare it.
+    bridge_predicates: BTreeMap<i64, String>,
+    /// Normalized terms the question uses.
+    asked: BTreeSet<String>,
+}
+
+/// Pushes traversed edges below what they led to.
+///
+/// See [`BRIDGE_DEMOTION`]. Only edges on the route to a reported fact are
+/// demoted, and the route may be longer than one edge: reaching a contact through
+/// a supplier makes *both* hops roads, even though the middle entity contributed
+/// no answer of its own.
+fn demote_bridges(fused: &mut BTreeMap<i64, (f64, Vec<Channel>)>, walk: &Walk) {
+    for edge_id in &walk.roads {
+        let asked_for = walk
+            .bridge_predicates
+            .get(edge_id)
+            .is_some_and(|p| walk.asked.contains(p));
+        if asked_for {
+            continue;
+        }
+        if let Some(entry) = fused.get_mut(edge_id) {
+            entry.0 *= BRIDGE_DEMOTION;
+        }
+    }
+}
+
+impl Brain {
+    /// Expands outward from what the question names, and ranks what is out there.
+    fn walk(
+        &self,
+        conn: &Connection,
+        q: &RecallQuery,
+        filter: &TemporalFilter,
+        fused: &BTreeMap<i64, (f64, Vec<Channel>)>,
+    ) -> std::result::Result<Walk, BrainError> {
+        let terms = normalized_terms(&q.text);
+        let asked: BTreeSet<String> = terms.iter().cloned().collect();
+
+        // Anchoring on entities the question actually names is what keeps this
+        // channel precise: the walk starts where the user pointed, not wherever
+        // the ranking happened to land. Seeding from the fused head is the
+        // fallback for a pure paraphrase, which names nothing the brain knows.
+        let mut anchors = graph::named_entities(conn, &terms)?;
+        if anchors.is_empty() {
+            anchors = seed_entities(conn, fused)?;
+        }
+
+        let n = graph::expand(conn, &anchors, filter, graph::MAX_DEPTH)?;
+        let reached = n.reached();
+        let hop: BTreeMap<i64, u32> = reached.iter().copied().collect();
+        let ids: Vec<i64> = reached.iter().map(|&(id, _)| id).collect();
+
+        let mut candidates = graph::facts_of(conn, &ids, filter)?;
+        // A crossed edge is not reported by the channel that crossed it. It is
+        // already in the results via the content channels if it deserves to be.
+        candidates.retain(|c| !n.bridges.contains(&c.fact_id));
+        // Nearest first; within a hop, the fact whose predicate the question
+        // named -- "de que pais" is asking for `pais`, and a brain that knows its
+        // own ontology should use that.
+        candidates.sort_by_key(|c| {
+            (
+                hop.get(&c.entity_id).copied().unwrap_or(u32::MAX),
+                !asked.contains(&c.predicate),
+                c.fact_id,
+            )
+        });
+        candidates.truncate(CHANNEL_DEPTH);
+
+        Ok(Walk {
+            roads: n.roads_to(candidates.iter().map(|c| c.entity_id)),
+            bridge_predicates: graph::predicates(conn, n.bridges.iter().copied())?,
+            ranked: candidates.iter().map(|c| c.fact_id).collect(),
+            asked,
+        })
+    }
+}
+
+/// The entities behind the best hits so far, both ends of an edge included.
+fn seed_entities(
+    conn: &Connection,
+    fused: &BTreeMap<i64, (f64, Vec<Channel>)>,
+) -> std::result::Result<Vec<i64>, BrainError> {
+    let mut best: Vec<(i64, f64)> = fused.iter().map(|(&id, (s, _))| (id, *s)).collect();
+    best.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+    best.truncate(SEED_DEPTH);
+    if best.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let ph = vec!["?"; best.len()].join(",");
+    let mut stmt = conn.prepare(&format!(
+        "SELECT entity_id, object_entity_id FROM fact WHERE id IN ({ph})"
+    ))?;
+    let rows = stmt.query_map(params_from_iter(best.iter().map(|&(id, _)| id)), |r| {
+        Ok((r.get::<_, i64>(0)?, r.get::<_, Option<i64>>(1)?))
+    })?;
+
+    let mut out = BTreeSet::new();
+    for row in rows {
+        let (entity, object) = row?;
+        out.insert(entity);
+        out.extend(object);
+    }
+    Ok(out.into_iter().collect())
 }
 
 impl Brain {
@@ -237,18 +413,27 @@ fn cosine_from_l2(distance: f32) -> f32 {
 }
 
 /// The SQL fragment restricting which facts may answer.
-struct TemporalFilter {
+///
+/// Shared with [`crate::graph`] on purpose. Traversal has to obey exactly the
+/// same notion of "which facts count" as retrieval does, and the only way to
+/// guarantee two subsystems agree about that is to give them one definition
+/// instead of two that look alike today.
+pub(crate) struct TemporalFilter {
     sql: String,
     at: Option<i64>,
     scope: Option<String>,
 }
 
 impl TemporalFilter {
-    fn new(q: &RecallQuery) -> Self {
+    pub(crate) fn new(q: &RecallQuery) -> Self {
+        Self::for_when(q.when, q.scope.clone())
+    }
+
+    pub(crate) fn for_when(when: When, scope: Option<String>) -> Self {
         // A retracted fact is excluded in every mode, including History.
         let mut sql = String::from(" AND f.retracted_at IS NULL");
         let mut at = None;
-        match q.when {
+        match when {
             When::Now => sql.push_str(" AND f.valid_to IS NULL"),
             When::AsOf(t) => {
                 sql.push_str(" AND f.valid_from <= ?a AND (f.valid_to IS NULL OR ?a < f.valid_to)");
@@ -256,14 +441,10 @@ impl TemporalFilter {
             }
             When::History => {}
         }
-        if q.scope.is_some() {
+        if scope.is_some() {
             sql.push_str(" AND f.scope = ?s");
         }
-        Self {
-            sql,
-            at,
-            scope: q.scope.clone(),
-        }
+        Self { sql, at, scope }
     }
 
     /// Rewrites the named markers (`?a`, `?s`) into plain positional `?`, pushing
@@ -273,7 +454,7 @@ impl TemporalFilter {
     /// appears twice in the as-of clause, and tracking that by hand against a
     /// positional list is exactly the kind of off-by-one that silently returns
     /// the wrong facts.
-    fn bind(&self, into: &mut Vec<rusqlite::types::Value>) -> String {
+    pub(crate) fn bind(&self, into: &mut Vec<rusqlite::types::Value>) -> String {
         let mut sql = String::with_capacity(self.sql.len());
         let mut rest = self.sql.as_str();
         while let Some(i) = rest.find('?') {
@@ -336,7 +517,7 @@ fn alias_channel(
     text: &str,
     filter: &TemporalFilter,
 ) -> std::result::Result<Vec<i64>, BrainError> {
-    let candidates = entity_candidates(text);
+    let candidates = normalized_terms(text);
     if candidates.is_empty() {
         return Ok(Vec::new());
     }
@@ -369,11 +550,17 @@ fn alias_channel(
     Ok(ids)
 }
 
-/// Normalized keys the query might be naming.
+/// The identity keys a question could be naming -- of an entity or of a predicate.
 ///
 /// Both single words and adjacent pairs, because "Produto A" is two tokens but
 /// one entity. Two is enough in practice and keeps this linear.
-fn entity_candidates(text: &str) -> Vec<String> {
+///
+/// Normalization is [`norm::key`], the same function that assigns identity on
+/// write, so "Produto A", "produto-a" and "produto_a" all name the same thing.
+/// Accents are preserved here, which means an unaccented question still finds the
+/// fact through BM25 but does not *name* it -- identity stays exact even where
+/// search is forgiving.
+fn normalized_terms(text: &str) -> Vec<String> {
     let words: Vec<&str> = text.split_whitespace().collect();
     let mut out = Vec::new();
     for (i, w) in words.iter().enumerate() {

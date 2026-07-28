@@ -19,11 +19,33 @@ use crate::embed::{Embedder, StaticEmbedder};
 use crate::ids::IdGen;
 use crate::index;
 use crate::norm;
+use crate::recall::{TemporalFilter, When};
 use crate::store::{Store, StoreError};
 use jiff::Timestamp;
 use rusqlite::{Connection, OptionalExtension, params};
+use serde::Serialize;
 
 pub use types::{Assertion, Cardinality, Fact, Object, Outcome, Provenance};
+
+/// Everything the brain holds about one entity.
+#[derive(Debug, Clone, Serialize)]
+pub struct EntityView {
+    pub key: String,
+    pub label: String,
+    pub facts: Vec<Fact>,
+    /// Nearest first. Empty unless a depth was asked for.
+    pub neighbours: Vec<Neighbour>,
+}
+
+/// An entity reached by walking relations, and the relation that got there.
+#[derive(Debug, Clone, Serialize)]
+pub struct Neighbour {
+    pub key: String,
+    pub entity: String,
+    pub hops: u32,
+    /// The edge crossed on the shortest route here, in words.
+    pub via: String,
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum BrainError {
@@ -456,6 +478,55 @@ impl Brain {
         load_fact(self.conn(), id)
     }
 
+    /// What is known about one entity, and what it connects to.
+    ///
+    /// The neighbourhood is the part worth having: it is the brain's own answer
+    /// to "where would the answer be if it is not here", which is the question
+    /// `recall` asks internally on every query. Being able to read it directly is
+    /// what makes a surprising ranking explainable instead of mysterious.
+    pub fn entity(&self, name: &str, when: When, depth: u32) -> Result<Option<EntityView>> {
+        let conn = self.conn();
+        let key = norm::key(name);
+        let Some(id) = find_entity(conn, &key)? else {
+            return Ok(None);
+        };
+        let filter = TemporalFilter::for_when(when, None);
+
+        let mut binds: Vec<rusqlite::types::Value> = vec![id.into()];
+        let where_sql = filter.bind(&mut binds);
+        let mut stmt = conn.prepare(&format!(
+            "{SELECT_FACT} WHERE f.entity_id = ?{where_sql} ORDER BY f.valid_from, f.id"
+        ))?;
+        let mut facts = Vec::new();
+        for row in stmt.query_map(rusqlite::params_from_iter(binds), row_to_fact)? {
+            facts.push(row??);
+        }
+
+        let mut neighbours = Vec::new();
+        if depth > 0 {
+            let walk = crate::graph::expand(conn, &[id], &filter, depth)?;
+            for (entity_id, hops) in walk.reached() {
+                let via = match walk.arrival.get(&entity_id) {
+                    Some(step) => load_fact(conn, step.edge)?.statement,
+                    None => continue,
+                };
+                neighbours.push(Neighbour {
+                    key: entity_key(conn, entity_id)?,
+                    entity: entity_label(conn, entity_id)?,
+                    hops,
+                    via,
+                });
+            }
+        }
+
+        Ok(Some(EntityView {
+            key,
+            label: entity_label(conn, id)?,
+            facts,
+            neighbours,
+        }))
+    }
+
     /// Where a fact came from and what became of it.
     pub fn why(&self, id: i64) -> Result<Provenance> {
         let fact = load_fact(self.conn(), id).map_err(|_| BrainError::NoSuchFact(id))?;
@@ -620,6 +691,14 @@ fn upsert_entity(conn: &Connection, key: &str, label: &str, now: Timestamp) -> R
 fn entity_label(conn: &Connection, id: i64) -> Result<String> {
     Ok(
         conn.query_row("SELECT label FROM entity WHERE id = ?", params![id], |r| {
+            r.get(0)
+        })?,
+    )
+}
+
+fn entity_key(conn: &Connection, id: i64) -> Result<String> {
+    Ok(
+        conn.query_row("SELECT key FROM entity WHERE id = ?", params![id], |r| {
             r.get(0)
         })?,
     )
