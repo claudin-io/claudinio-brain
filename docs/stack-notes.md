@@ -49,12 +49,35 @@ declared MSRV is a claim about a *build*, and the only way to check it is to run
 one. A build-script dependency can raise the real floor without any manifest
 saying so.
 
-## musl needs `_GNU_SOURCE`
+## musl and `sqlite-vec`'s BSD typedefs
 
-`sqlite-vec`'s C uses the BSD spellings `u_int8_t`, `u_int16_t` and `u_int64_t`.
-glibc declares those unconditionally; musl only does under `_GNU_SOURCE`, so the
-musl build dies at `unknown type name 'u_int8_t'` before compiling any Rust. CI
-sets `CFLAGS_x86_64_unknown_linux_musl=-D_GNU_SOURCE` for that target only.
+`sqlite-vec.c` lines 68-70 are:
+
+```c
+#ifndef _WIN32
+#ifndef __EMSCRIPTEN__
+#ifndef __COSMOPOLITAN__
+#ifndef __wasi__
+typedef u_int8_t uint8_t;
+typedef u_int16_t uint16_t;
+typedef u_int64_t uint64_t;
+#endif
+```
+
+Nothing in that guard excludes musl, and musl does not declare the BSD spellings,
+so the target dies at `unknown type name 'u_int8_t'` before any Rust compiles.
+
+`-D_GNU_SOURCE` is the obvious guess and it is wrong — measured, not assumed.
+Even with the BSD names declared, the typedef still collides with `stdint.h`'s
+`uint8_t`. What works is mapping the BSD names onto the standard ones, which
+turns those three lines into self-typedefs, legal since C11:
+
+```
+CFLAGS_x86_64_unknown_linux_musl=-Du_int8_t=uint8_t -Du_int16_t=uint16_t -Du_int64_t=uint64_t
+```
+
+Those three lines are the only occurrences of `u_int` in the file, so the
+substitution cannot reach anything else.
 
 ## SQLite gotchas found the hard way
 
