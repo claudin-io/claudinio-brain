@@ -10,7 +10,67 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
+  # Decides whether the rest of this file has anything to do. A README change
+  # cannot break a build, and five toolchains plus an eval run is an expensive
+  # way to prove it.
+  #
+  # This is deliberately *not* `paths-ignore` on the workflow. Six of these jobs
+  # are required checks on main, and a workflow that never runs never reports
+  # them -- they sit at "Expected -- waiting for status" and the pull request can
+  # never be merged. A job skipped by an `if` condition does report, as skipped,
+  # and branch protection accepts that as success. Same intent, opposite
+  # mechanism, and only one of the two is a trap.
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # the base commit has to be in the clone to diff against
+      - id: filter
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          if [ -n "$BASE" ]; then
+            files=$(git diff --name-only "$BASE" "$GITHUB_SHA")
+          elif [ -n "$BEFORE" ] && git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+            files=$(git diff --name-only "$BEFORE" "$GITHUB_SHA")
+          else
+            # A new branch, a tag, a manual run: nothing to compare against, so
+            # assume code. Running a build that was not needed costs minutes;
+            # skipping one that was needed costs a broken main.
+            files=""
+          fi
+
+          if [ -z "$files" ]; then
+            echo "no comparable base -- treating as code"
+            echo "code=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "changed files:"
+          printf '%s\n' "$files" | sed 's/^/  /'
+
+          # Everything that is not documentation. Testing the output for
+          # emptiness rather than using `grep -q`: BSD grep returns 1 for `-qv`
+          # even when the inverted match has lines, so `-q` here would behave one
+          # way on the runner and the other way on the maintainer's laptop.
+          code=$(printf '%s\n' "$files" | grep -vE '(\.md$|^docs/|^\.github/ISSUE_TEMPLATE/)' || true)
+          if [ -n "$code" ]; then
+            echo "not documentation:"
+            printf '%s\n' "$code" | sed 's/^/  /'
+            echo "code=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "documentation only -- skipping build, test and eval"
+            echo "code=false" >> "$GITHUB_OUTPUT"
+          fi
+
   lint:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -22,6 +82,8 @@ jobs:
       - run: cargo clippy --all-targets --all-features -- -D warnings
 
   test:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -32,6 +94,13 @@ jobs:
             target: x86_64-unknown-linux-gnu
           - os: ubuntu-latest
             target: x86_64-unknown-linux-musl
+          # Native, not emulated. Here because `c_char` is unsigned on aarch64
+          # Linux and signed everywhere else in this matrix, so an FFI signature
+          # can be wrong in a way no other target can see -- which is exactly how
+          # `sqlite3_auto_extension` shipped broken for ARM servers until the
+          # release build tried to compile it.
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
@@ -44,7 +113,7 @@ jobs:
 
       # A C compiler is required (onig, bundled sqlite3, sqlite-vec). A C++ one is
       # deliberately not: see docs/stack-notes.md. musl needs its own cross gcc.
-      - if: matrix.target == 'x86_64-unknown-linux-musl'
+      - if: endsWith(matrix.target, '-musl')
         run: sudo apt-get update && sudo apt-get install -y musl-tools
 
       # sqlite-vec.c:68-70 does `typedef u_int8_t uint8_t;` guarded only against
@@ -55,9 +124,10 @@ jobs:
       # typedef still collides with stdint.h's uint8_t.) Those are the only three
       # occurrences of `u_int` in the file, so the substitution reaches nothing
       # else.
-      - if: matrix.target == 'x86_64-unknown-linux-musl'
+      - if: endsWith(matrix.target, '-musl')
         run: |
-          echo "CFLAGS_x86_64_unknown_linux_musl=-Du_int8_t=uint8_t -Du_int16_t=uint16_t -Du_int64_t=uint64_t" >> "$GITHUB_ENV"
+          var="CFLAGS_$(echo '${{ matrix.target }}' | tr '-' '_')"
+          echo "$var=-Du_int8_t=uint8_t -Du_int16_t=uint16_t -Du_int64_t=uint64_t" >> "$GITHUB_ENV"
 
       - run: cargo test --target ${{ matrix.target }}
       # The core must stay buildable without rmcp/tokio.
@@ -66,6 +136,8 @@ jobs:
   eval:
     # Recall quality, gated on evals/baseline.json. Improving a number means
     # updating the baseline in the same commit, so it lands in the diff.
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -74,6 +146,8 @@ jobs:
       - run: cargo run --release --example eval
 
   msrv:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
