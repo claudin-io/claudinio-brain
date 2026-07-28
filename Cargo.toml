@@ -1,0 +1,89 @@
+[package]
+name = "brain"
+version = "0.1.0"
+edition = "2024"
+# 1.88 is the real floor: schemars -> darling 0.23 requires it. Declaring 1.85
+# (edition 2024's own floor) would be a lie that only breaks on someone else's CI.
+rust-version = "1.88"
+description = "Bitemporal knowledge-graph memory for AI agents. One binary, one file, no server."
+license = "MIT"
+
+[[bin]]
+name = "brain"
+path = "src/main.rs"
+
+[lib]
+name = "brain"
+path = "src/lib.rs"
+
+[dependencies]
+# --- storage -----------------------------------------------------------------
+# `bundled` statically links SQLite 3.53.x with FTS5 + JSON1 + STAT4 + recursive
+# CTEs already compiled in. There is NO `fts5` cargo feature -- asking for one
+# breaks the build.
+rusqlite = { version = "0.40", features = [
+  "bundled",
+  "functions",
+  "window",
+  "serde_json",
+  "backup",
+  "blob",
+  "limits",   # SQLITE_LIMIT_ATTACHED = 0 is how a brain is sealed shut
+] }
+# Compiled into the host SQLite via cc with -DSQLITE_CORE. No .dylib, no dlopen,
+# which sidesteps every macOS arm64 extension-loading bug.
+sqlite-vec = "=0.1.9"
+
+# --- embeddings --------------------------------------------------------------
+# Static embeddings: a token->vector lookup table, not a transformer. Weights are
+# include_bytes!'d, so `local-only` cfg-deletes every network path at compile time.
+model2vec-rs = { version = "0.2.1", default-features = false, features = [
+  "local-only",
+] }
+# Direct dependency on purpose: feature unification supplies tokenizers/onig (C)
+# without esaxx_fast (C++). model2vec-rs's own `onig` feature would drag in both.
+tokenizers = { version = "0.21", default-features = false, features = ["onig"] }
+
+# --- MCP (behind the default-on `mcp` feature) -------------------------------
+rmcp = { version = "=2.2.0", features = [
+  "server",
+  "transport-io",
+  "macros",
+], optional = true }
+tokio = { version = "1", features = [
+  "rt-multi-thread",
+  "macros",
+  "io-std",
+], optional = true }
+schemars = { version = "1", optional = true }
+
+# --- cli / infra -------------------------------------------------------------
+clap = { version = "4", features = ["derive", "wrap_help"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+jiff = { version = "0.2", features = ["serde"] }
+thiserror = "2"
+anyhow = "1"
+bytemuck = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1", features = ["v7", "serde"] }
+directories = "6"
+toml = "0.9"
+
+[dev-dependencies]
+insta = { version = "1", features = ["json"] }
+proptest = "1"
+tempfile = "3"
+assert_cmd = "2"
+predicates = "3"
+
+[features]
+default = ["mcp"]
+mcp = ["dep:rmcp", "dep:tokio", "dep:schemars"]
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = true
