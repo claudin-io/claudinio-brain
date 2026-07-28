@@ -1,0 +1,156 @@
+name: Release
+
+# Two kinds of release come out of this one workflow, deliberately:
+#
+#   - every push to main refreshes the rolling `nightly` prerelease, so there is
+#     always a binary that matches the tip of the tree;
+#   - pushing a `v*` tag cuts a permanent, immutable release.
+#
+# install.sh asks for the newest *stable* release and only falls back to
+# `nightly` when none exists yet, which is exactly the state of this repo before
+# the first tag.
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+    # A README typo does not justify seven cross-compiles. install.sh is not
+    # excluded: it is downloaded from the default branch, not from a release,
+    # but a change to it usually rides along with a change to the packaging.
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - '.github/ISSUE_TEMPLATE/**'
+  workflow_dispatch:
+
+permissions:
+  contents: write # creating a release is a write to the repository
+
+concurrency:
+  group: release-${{ github.ref }}
+  # A newer main supersedes an in-flight nightly build. A tag never does: that
+  # artifact is permanent and must not be cancelled halfway.
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    strategy:
+      # One target failing must not hide whether the others still build. The
+      # publish job below still refuses to ship a partial set.
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-apple-darwin
+            os: macos-latest
+          # Linux ships musl only, and that is not laziness. The gnu runners are
+          # Ubuntu 24.04 (glibc 2.39), so a gnu binary built here refuses to run
+          # on Debian 12 or Ubuntu 22.04 -- it would fail for the people most
+          # likely to be running a stable server. A static musl binary has no
+          # libc floor at all. ci.yml still tests the gnu target, which is where
+          # that coverage belongs.
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-24.04-arm
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+
+      # Same two musl workarounds as ci.yml, kept in sync with the reasoning
+      # documented there: musl needs its own cross gcc, and sqlite-vec.c typedefs
+      # the BSD integer spellings that musl does not declare.
+      - if: endsWith(matrix.target, '-musl')
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - if: endsWith(matrix.target, '-musl')
+        shell: bash
+        run: |
+          var="CFLAGS_$(echo '${{ matrix.target }}' | tr '-' '_')"
+          echo "$var=-Du_int8_t=uint8_t -Du_int16_t=uint16_t -Du_int64_t=uint64_t" >> "$GITHUB_ENV"
+
+      - run: cargo build --release --locked --target ${{ matrix.target }}
+
+      # Artifact names carry the target but never the version. install.sh can
+      # then build a URL from `uname` alone, and the rolling nightly keeps the
+      # same filenames release after release.
+      - name: Package (unix)
+        if: matrix.os != 'windows-latest'
+        shell: bash
+        run: |
+          mkdir dist
+          tar -czf "dist/brain-${{ matrix.target }}.tar.gz" \
+            -C "target/${{ matrix.target }}/release" brain
+
+      - name: Package (windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory dist | Out-Null
+          Compress-Archive -Path "target/${{ matrix.target }}/release/brain.exe" `
+            -DestinationPath "dist/brain-${{ matrix.target }}.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: brain-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    # A fork gets the build coverage but not a doomed `gh release` against a
+    # repository its token cannot write to.
+    if: github.repository == 'claudin-io/claudinio-brain'
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      # One SHA256SUMS for the whole release. install.sh verifies against it, so
+      # a corrupted or substituted download stops before anything reaches a
+      # user's PATH.
+      - name: Checksums
+        working-directory: dist
+        run: |
+          sha256sum brain-* > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Publish tagged release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" dist/* \
+            --title "${GITHUB_REF_NAME}" \
+            --generate-notes
+
+      # The nightly release is replaced, not appended to: deleting the tag as
+      # well is what makes it point at the commit that produced the binaries.
+      # `gh release upload --clobber` would leave the tag stranded on whatever
+      # commit first created it.
+      - name: Refresh nightly
+        if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete nightly --cleanup-tag --yes || true
+          gh release create nightly dist/* \
+            --prerelease \
+            --target "${GITHUB_SHA}" \
+            --title "nightly" \
+            --notes "Built from main at ${GITHUB_SHA}. Moves with every push; use a \`v*\` release if you want a build that stays put."
