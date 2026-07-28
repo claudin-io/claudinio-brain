@@ -18,7 +18,8 @@ use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
 /// Bumped whenever the on-disk layout changes in a way older binaries cannot read.
-pub const SCHEMA_VERSION: i64 = 1;
+/// v2 added the bitemporal fact model.
+pub const SCHEMA_VERSION: i64 = 2;
 
 const SCHEMA: &str = include_str!("schema.sql");
 

@@ -3,8 +3,10 @@
 //! Every command accepts the same brain selectors, and every JSON payload
 //! carries the brain's identity so an agent can never confuse two brains.
 
+use crate::brain::Cardinality;
 use crate::locate::{Ctx, Selection};
 use clap::{Args, Parser, Subcommand};
+use jiff::Timestamp;
 use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
@@ -59,6 +61,109 @@ pub enum Cmd {
 
     /// Report the brain's identity and contents.
     Stats,
+
+    /// Record a fact.
+    Remember(RememberArgs),
+
+    /// Record a relation between two entities.
+    Link(LinkArgs),
+
+    /// Read the current value, or the value at a past instant.
+    Get(GetArgs),
+
+    /// Show the full trajectory of a subject/predicate pair.
+    History(GetArgs),
+
+    /// Show where a fact came from and what became of it.
+    Why { fact_id: i64 },
+
+    /// Mark a fact as never having been true.
+    Retract {
+        fact_id: i64,
+        #[arg(long)]
+        reason: Option<String>,
+    },
+
+    /// Fix a predicate's cardinality.
+    Predicate {
+        name: String,
+        #[arg(long, value_parser = parse_cardinality)]
+        cardinality: Cardinality,
+    },
+}
+
+#[derive(Args, Debug)]
+pub struct RememberArgs {
+    #[arg(long)]
+    pub subject: String,
+    #[arg(long)]
+    pub predicate: String,
+
+    /// A literal value. Parsed as a number when it looks like one, else as text.
+    #[arg(long, conflicts_with = "entity")]
+    pub value: Option<String>,
+
+    /// Another entity, making this fact an edge in the graph.
+    #[arg(long, conflicts_with = "value")]
+    pub entity: Option<String>,
+
+    #[arg(long)]
+    pub unit: Option<String>,
+
+    /// When this became true. Defaults to now. Accepts `2026-07-28` or RFC 3339.
+    #[arg(long, value_name = "WHEN")]
+    pub at: Option<String>,
+
+    #[arg(long)]
+    pub source: Option<String>,
+
+    /// JSON locator: where the answer actually lives, e.g.
+    /// `{"file":"src/pricing.rs","lines":"40-52"}`.
+    #[arg(long)]
+    pub locator: Option<String>,
+
+    #[arg(long)]
+    pub confidence: Option<f64>,
+
+    #[arg(long)]
+    pub scope: Option<String>,
+
+    #[arg(long, value_parser = parse_cardinality)]
+    pub cardinality: Option<Cardinality>,
+}
+
+#[derive(Args, Debug)]
+pub struct LinkArgs {
+    pub from: String,
+    pub rel: String,
+    pub to: String,
+    #[arg(long, value_name = "WHEN")]
+    pub at: Option<String>,
+}
+
+#[derive(Args, Debug)]
+pub struct GetArgs {
+    pub subject: String,
+    pub predicate: String,
+    /// Answer as of this instant instead of using the latest known value.
+    #[arg(long, value_name = "WHEN")]
+    pub as_of: Option<String>,
+}
+
+fn parse_cardinality(s: &str) -> Result<Cardinality, String> {
+    Cardinality::parse(s).ok_or_else(|| format!("expected `single` or `multi`, got {s:?}"))
+}
+
+/// Accepts a bare date as well as a full RFC 3339 instant, because `--at
+/// 2026-07-28` is what anyone actually types.
+pub fn parse_when(s: &str) -> anyhow::Result<Timestamp> {
+    if let Ok(t) = s.parse::<Timestamp>() {
+        return Ok(t);
+    }
+    if let Ok(d) = s.parse::<jiff::civil::Date>() {
+        return Ok(d.to_zoned(jiff::tz::TimeZone::UTC)?.timestamp());
+    }
+    anyhow::bail!("could not read {s:?} as a date or timestamp (try `2026-07-28`)")
 }
 
 #[derive(Args, Debug)]
