@@ -13,13 +13,6 @@ on:
   push:
     branches: [main]
     tags: ['v*']
-    # A README typo does not justify seven cross-compiles. install.sh is not
-    # excluded: it is downloaded from the default branch, not from a release,
-    # but a change to it usually rides along with a change to the packaging.
-    paths-ignore:
-      - '**.md'
-      - 'docs/**'
-      - '.github/ISSUE_TEMPLATE/**'
   workflow_dispatch:
 
 permissions:
@@ -35,7 +28,57 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # A README typo does not justify five cross-compiles. This used to be
+  # `paths-ignore` on the push trigger, which was wrong for a subtler reason than
+  # the one in ci.yml: a tag push carries no changed files to filter on, so the
+  # one event that must never be skipped was the one most at risk of being
+  # skipped. Deciding inside the workflow means the tag branch of the condition
+  # can be stated outright.
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - id: filter
+        env:
+          BEFORE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          if [ -n "${BEFORE:-}" ] && git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+            files=$(git diff --name-only "$BEFORE" "$GITHUB_SHA")
+          else
+            files=""
+          fi
+
+          if [ -z "$files" ]; then
+            echo "no comparable base -- treating as code"
+            echo "code=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "changed files:"
+          printf '%s\n' "$files" | sed 's/^/  /'
+
+          # Emptiness of the output, not `grep -q`: BSD grep returns 1 for `-qv`
+          # even when the inverted match has lines, so `-q` would behave one way
+          # on the runner and the other way on the maintainer's laptop.
+          code=$(printf '%s\n' "$files" | grep -vE '(\.md$|^docs/|^\.github/ISSUE_TEMPLATE/)' || true)
+          if [ -n "$code" ]; then
+            echo "not documentation:"
+            printf '%s\n' "$code" | sed 's/^/  /'
+            echo "code=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "documentation only -- not rebuilding the binaries"
+            echo "code=false" >> "$GITHUB_OUTPUT"
+          fi
+
   build:
+    needs: changes
+    # A tag always builds, whatever it touched: that artifact is the release.
+    if: needs.changes.outputs.code == 'true' || startsWith(github.ref, 'refs/tags/')
     name: ${{ matrix.target }}
     strategy:
       # One target failing must not hide whether the others still build. The
