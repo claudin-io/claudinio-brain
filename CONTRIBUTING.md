@@ -129,6 +129,7 @@ src/
   index/          vector search: vec0 plus a brute-force conformance fallback
   norm.rs         text -> identity key. The whole deduplication story
   locate.rs       which brain an invocation means, and why
+  mcp.rs          the MCP tool surface; a shell over the same library the CLI uses
   cli.rs main.rs  the command surface
 evals/            quality suites and the committed baseline
 docs/stack-notes.md   findings that cost time to rediscover

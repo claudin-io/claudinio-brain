@@ -127,6 +127,27 @@ nullable `valid_to`.
 **Recursive CTEs need `UNION`, not `UNION ALL`, to terminate on cycles.** The
 graph will have cycles; `UNION` deduplicates and halts, `UNION ALL` does not.
 
+## rmcp gotchas found the hard way
+
+**A tool's output schema must have a root `type: object`.** Returning
+`Json<serde_json::Value>` compiles fine and then panics at *startup*, before the
+first request: "Schema is missing 'type' field". Tools therefore return named
+result structs. The payloads inside stay `serde_json::Value` rather than the core
+types, because deriving `JsonSchema` on `Fact` would drag schemars through `jiff`
+and `uuid` — putting a schema derive on the bitemporal core to satisfy an
+optional feature is the tail wagging the dog.
+
+**`Implementation::from_build_env()` reports `rmcp`,** not the crate that calls
+it, so a server that uses the default identifies itself to agents as the SDK.
+Set it explicitly with `with_server_info`.
+
+**`#[tool_router(server_handler)]` emits the `ServerHandler` impl for you**, which
+conflicts with writing your own `get_info`. Use plain `#[tool_router]` plus
+`#[tool_handler] impl ServerHandler` when the server needs custom instructions.
+
+**rmcp's `schemars` feature is not on by default** and the tool router does not
+compile without it.
+
 ## Test hermeticity
 
 **`directories` ignores XDG on macOS** — it resolves to `~/Library/Application

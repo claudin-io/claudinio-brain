@@ -220,6 +220,33 @@ Todo comando aceita `--json`, e toda resposta JSON é carimbada com o brain que 
 produziu. `--brain <caminho>`, `--use <nome>` e `--global` escolhem com qual
 brain falar.
 
+## MCP
+
+`brain serve` fala MCP sobre stdio, então um agente pode usar um brain como
+superfície de ferramentas. Nove: `remember`, `link`, `recall`, `get`, `history`,
+`entity`, `why`, `retract`, `alias`.
+
+```json
+{
+  "mcpServers": {
+    "brain": { "command": "brain", "args": ["serve", "--global"] }
+  }
+}
+```
+
+O servidor resolve o brain uma vez, na inicialização, pela mesma escada de oito
+degraus, e fica preso a ele pela sessão inteira — por isso a identidade é dita
+uma vez nas instruções do servidor em vez de carimbada em toda resposta, ao
+contrário do CLI, onde cada invocação poderia apontar para um arquivo diferente.
+
+As descrições das ferramentas carregam o que é fácil errar: que um valor que
+*mudou* pede `remember` e um que *nunca foi verdade* pede `retract`; que o
+`entity` diz sob qual grafia a coisa já está guardada, porque identidade é exata
+e dois históricos paralelos não têm conserto.
+
+O `recall` não aprende nomes sem que você peça. Uma leitura que escreve é uma
+leitura que não pode ser repetida.
+
 ## Usando a partir de um agente
 
 `skills/claudinio-brain/` é uma [Agent Skill](https://agentskills.io) que ensina
@@ -259,10 +286,10 @@ Pré-1.0. O formato em disco ainda não é estável e não há caminho de migra�
 entre versões de schema.
 
 Construído e funcionando: o store selado e a escada de resolução, o modelo
-bitemporal de fatos, os quatro canais de recall, e nomes declarados e aprendidos.
-Um servidor MCP é a próxima peça — a feature `mcp` do cargo está declarada e
-ligada por padrão, mas nada a implementa ainda, então hoje o CLI e a biblioteca
-Rust são as duas superfícies reais.
+bitemporal de fatos, os quatro canais de recall, nomes declarados e aprendidos, e
+o servidor MCP. Três superfícies — o CLI, o servidor MCP e a biblioteca Rust —
+todas sobre um núcleo só, então o que um agente vê é exatamente o que o
+`brain recall` te mostra.
 
 ## Contribuindo
 
