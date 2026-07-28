@@ -95,3 +95,40 @@ CREATE VIEW edge AS
          valid_from, valid_to, retracted_at, confidence
   FROM fact
   WHERE object_entity_id IS NOT NULL;
+
+-- The BM25 channel. External-content FTS5 plus triggers, so the index lives in
+-- the same transaction as the facts and cannot drift on a crash -- the property
+-- a separate search engine could not give us.
+--
+-- `remove_diacritics 2` makes search accent-insensitive, so a question typed
+-- "preco" finds a fact recorded as "preço". Identity stays exact (see
+-- norm::key); only search is forgiving.
+CREATE VIRTUAL TABLE fact_fts USING fts5(
+  statement,
+  search_text,
+  content = 'fact',
+  content_rowid = 'id',
+  tokenize = 'porter unicode61 remove_diacritics 2'
+);
+
+CREATE TRIGGER fact_fts_insert AFTER INSERT ON fact BEGIN
+  INSERT INTO fact_fts(rowid, statement, search_text)
+  VALUES (new.id, new.statement, new.search_text);
+END;
+
+CREATE TRIGGER fact_fts_delete AFTER DELETE ON fact BEGIN
+  INSERT INTO fact_fts(fact_fts, rowid, statement, search_text)
+  VALUES ('delete', old.id, old.statement, old.search_text);
+END;
+
+-- Guarded on the indexed columns: closing a fact rewrites valid_to and
+-- superseded_by constantly, and reindexing identical text on every supersession
+-- would be pure waste.
+CREATE TRIGGER fact_fts_update AFTER UPDATE ON fact
+WHEN old.statement IS NOT new.statement OR old.search_text IS NOT new.search_text
+BEGIN
+  INSERT INTO fact_fts(fact_fts, rowid, statement, search_text)
+  VALUES ('delete', old.id, old.statement, old.search_text);
+  INSERT INTO fact_fts(rowid, statement, search_text)
+  VALUES (new.id, new.statement, new.search_text);
+END;

@@ -15,4 +15,5 @@ pub mod config;
 pub mod ids;
 pub mod locate;
 pub mod norm;
+pub mod recall;
 pub mod store;

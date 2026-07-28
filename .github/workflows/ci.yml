@@ -51,6 +51,16 @@ jobs:
       # The core must stay buildable without rmcp/tokio.
       - run: cargo check --target ${{ matrix.target }} --no-default-features
 
+  eval:
+    # Recall quality, gated on evals/baseline.json. Improving a number means
+    # updating the baseline in the same commit, so it lands in the diff.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo run --release --example eval
+
   msrv:
     runs-on: ubuntu-latest
     steps:

@@ -71,6 +71,9 @@ pub enum Cmd {
     /// Read the current value, or the value at a past instant.
     Get(GetArgs),
 
+    /// Search the brain with a natural-language question.
+    Recall(RecallArgs),
+
     /// Show the full trajectory of a subject/predicate pair.
     History(GetArgs),
 
@@ -139,6 +142,26 @@ pub struct LinkArgs {
     pub to: String,
     #[arg(long, value_name = "WHEN")]
     pub at: Option<String>,
+}
+
+#[derive(Args, Debug)]
+pub struct RecallArgs {
+    /// The question, in whatever words the caller has.
+    pub query: String,
+
+    /// Answer as of this instant instead of with what currently holds.
+    #[arg(long, value_name = "WHEN", conflicts_with = "history")]
+    pub as_of: Option<String>,
+
+    /// Return the whole trajectory, closed intervals included.
+    #[arg(long)]
+    pub history: bool,
+
+    #[arg(long, default_value_t = 10)]
+    pub limit: usize,
+
+    #[arg(long)]
+    pub scope: Option<String>,
 }
 
 #[derive(Args, Debug)]

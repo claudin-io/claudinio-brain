@@ -408,6 +408,11 @@ impl Brain {
         )
     }
 
+    /// Loads one fact by id.
+    pub fn fact(&self, id: i64) -> Result<Fact> {
+        load_fact(self.conn(), id)
+    }
+
     /// Where a fact came from and what became of it.
     pub fn why(&self, id: i64) -> Result<Provenance> {
         let fact = load_fact(self.conn(), id).map_err(|_| BrainError::NoSuchFact(id))?;

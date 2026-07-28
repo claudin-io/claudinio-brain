@@ -3,11 +3,12 @@
 #![deny(clippy::print_stdout, clippy::dbg_macro)]
 
 use brain::brain::{Assertion, Brain, Object};
-use brain::cli::{Cli, Cmd, GetArgs, InitArgs, LinkArgs, RememberArgs, parse_when};
+use brain::cli::{Cli, Cmd, GetArgs, InitArgs, LinkArgs, RecallArgs, RememberArgs, parse_when};
 use brain::clock::SystemClock;
 use brain::config::Config;
 use brain::ids::UuidV7Gen;
 use brain::locate::Ctx;
+use brain::recall::RecallQuery;
 use brain::store::Store;
 use clap::Parser;
 
@@ -38,6 +39,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Cmd::Remember(args) => cmd_remember(args, &cli, &ctx),
         Cmd::Link(args) => cmd_link(args, &cli, &ctx),
         Cmd::Get(args) => cmd_get(args, &cli, &ctx),
+        Cmd::Recall(args) => cmd_recall(args, &cli, &ctx),
         Cmd::History(args) => cmd_history(args, &cli, &ctx),
         Cmd::Why { fact_id } => cmd_why(*fact_id, &cli, &ctx),
         Cmd::Retract { fact_id, reason } => cmd_retract(*fact_id, reason.as_deref(), &cli, &ctx),
@@ -158,6 +160,36 @@ fn cmd_get(args: &GetArgs, cli: &Cli, ctx: &Ctx) -> anyhow::Result<()> {
     } else {
         for f in &facts {
             emit(&f.statement);
+        }
+    }
+    Ok(())
+}
+
+fn cmd_recall(args: &RecallArgs, cli: &Cli, ctx: &Ctx) -> anyhow::Result<()> {
+    let mut q = RecallQuery::new(&args.query).limit(args.limit);
+    if let Some(w) = &args.as_of {
+        q = q.as_of(parse_when(w)?);
+    }
+    if args.history {
+        q = q.history();
+    }
+    if let Some(s) = &args.scope {
+        q = q.scope(s);
+    }
+
+    let b = open(cli, ctx)?;
+    let hits = b.recall(&q)?;
+
+    if cli.json {
+        emit(&serde_json::to_string_pretty(&answer(
+            &b,
+            serde_json::json!({ "query": args.query, "hits": hits }),
+        ))?);
+    } else if hits.is_empty() {
+        emit("(nothing known)");
+    } else {
+        for h in &hits {
+            emit(&h.fact.statement);
         }
     }
     Ok(())

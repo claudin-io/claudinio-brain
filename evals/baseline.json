@@ -1,0 +1,80 @@
+{
+  "graph": {
+    "alias": {
+      "cases": 8,
+      "recall@1": 0.0,
+      "recall@5": 0.0,
+      "recall@10": 0.0,
+      "mrr": 0.0,
+      "top1_accuracy": 0.0
+    },
+    "bm25": {
+      "cases": 8,
+      "recall@1": 0.125,
+      "recall@5": 0.75,
+      "recall@10": 0.75,
+      "mrr": 0.375,
+      "top1_accuracy": 0.125
+    },
+    "bm25+alias": {
+      "cases": 8,
+      "recall@1": 0.0,
+      "recall@5": 0.75,
+      "recall@10": 0.75,
+      "mrr": 0.313,
+      "top1_accuracy": 0.0
+    }
+  },
+  "retrieval": {
+    "alias": {
+      "cases": 20,
+      "recall@1": 0.675,
+      "recall@5": 0.7,
+      "recall@10": 0.7,
+      "mrr": 0.65,
+      "top1_accuracy": 0.65
+    },
+    "bm25": {
+      "cases": 20,
+      "recall@1": 0.975,
+      "recall@5": 1.0,
+      "recall@10": 1.0,
+      "mrr": 0.95,
+      "top1_accuracy": 0.95
+    },
+    "bm25+alias": {
+      "cases": 20,
+      "recall@1": 0.975,
+      "recall@5": 1.0,
+      "recall@10": 1.0,
+      "mrr": 0.95,
+      "top1_accuracy": 0.95
+    }
+  },
+  "temporal": {
+    "alias": {
+      "cases": 21,
+      "recall@1": 0.893,
+      "recall@5": 0.952,
+      "recall@10": 0.952,
+      "mrr": 0.905,
+      "top1_accuracy": 0.905
+    },
+    "bm25": {
+      "cases": 21,
+      "recall@1": 0.813,
+      "recall@5": 1.0,
+      "recall@10": 1.0,
+      "mrr": 0.905,
+      "top1_accuracy": 0.857
+    },
+    "bm25+alias": {
+      "cases": 21,
+      "recall@1": 0.909,
+      "recall@5": 1.0,
+      "recall@10": 1.0,
+      "mrr": 0.952,
+      "top1_accuracy": 0.952
+    }
+  }
+}
