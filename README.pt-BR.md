@@ -19,9 +19,9 @@
 
 ---
 
-Dê um banco vetorial a um agente e pergunte quanto custa um produto. Ele vai
-encontrar todos os preços que você já escreveu e escolher um. Não tem como saber
-qual ainda é verdade, porque "o preço é 20" e "o preço *era* 20" são a mesma
+Dê um banco vetorial a um agente e pergunte como um serviço autentica. Ele vai
+encontrar todas as respostas que alguém já escreveu e escolher uma. Não tem como
+saber qual ainda é verdade, porque "usamos JWT" e "usávamos JWT" são a mesma
 frase para uma medida de similaridade.
 
 O `brain` guarda fatos numa linha do tempo, não numa pilha. Escrever um valor
@@ -29,24 +29,43 @@ novo não sobrescreve o antigo — **fecha** ele. Um registro só responde as du
 perguntas:
 
 ```console
-$ brain remember --subject produto_a --predicate preco --value 20 --at 2026-01-01
-created: produto_a preco 20
+$ brain remember --subject auth --predicate strategy --value "JWT" \
+    --at 2026-01-01 --source adr-004
+created: auth strategy JWT
 
-$ brain remember --subject produto_a --predicate preco --value 25 --at 2026-06-01
-superseded: produto_a preco 25
+$ brain remember --subject auth --predicate strategy --value "server-side sessions" \
+    --at 2026-06-01 --source adr-011
+superseded: auth strategy server-side sessions
 
-$ brain get produto_a preco
-produto_a preco 25
+$ brain get auth strategy
+auth strategy server-side sessions
 
-$ brain get produto_a preco --as-of 2026-03-01
-produto_a preco 20
+$ brain get auth strategy --as-of 2026-03-01
+auth strategy JWT
 
-$ brain history produto_a preco
-[2026-01-01T00:00:00Z] produto_a preco 20  (until 2026-06-01T00:00:00Z)
-[2026-06-01T00:00:00Z] produto_a preco 25  (current)
+$ brain history auth strategy
+[2026-01-01T00:00:00Z] auth strategy JWT  (until 2026-06-01T00:00:00Z)
+[2026-06-01T00:00:00Z] auth strategy server-side sessions  (current)
 ```
 
 Nada foi apagado, e nada precisou ser reembeddado para isso funcionar.
+
+## Um fato é qualquer coisa que valha mais que uma sessão
+
+Sujeito, predicado, valor. Não há nada específico de domínio no modelo — não
+existe schema para declarar, e um predicado é só uma palavra:
+
+```console
+$ brain remember --subject api_gateway --predicate timeout --value 30 --unit s
+$ brain remember --subject checkout_service --predicate owner --value "platform-team"
+$ brain remember --subject release_1_4 --predicate freeze_date --value 2026-08-15
+$ brain remember --subject André --predicate team --value "platform"
+```
+
+Uma decisão e o motivo dela, um valor de config, um responsável, um prazo, uma
+versão de schema, uma restrição que alguém falou em voz alta, onde no código a
+resposta de verdade mora. Qualquer coisa que um agente teria que redescobrir,
+chutar, ou perderia quando a sessão acabasse.
 
 ## Por que bitemporal
 
@@ -72,22 +91,23 @@ admitir a lacuna.
 ## Relações são fatos
 
 `link A rel B` é um fato cujo objeto é uma entidade, então o grafo herda
-bitemporalidade de graça — um fornecedor que mudou é um intervalo fechado, não
+bitemporalidade de graça — uma dependência que mudou é um intervalo fechado, não
 uma linha deletada. Isso também significa que a resposta pode morar num lugar
 que as palavras da pergunta nunca alcançam:
 
 ```console
-$ brain link produto_a fornecido_por acme
-$ brain remember --subject acme --predicate pais --value "Chile"
+$ brain link checkout_service depends_on payments_db
+$ brain remember --subject payments_db --predicate region --value "eu-west-1"
 
-$ brain recall "de que pais vem o produto_a"
-acme pais Chile
-produto_a preco 25
-produto_a fornecido_por acme
+$ brain recall "which region does checkout_service data live in" --limit 3
+checkout_service owner platform-team
+payments_db region eu-west-1
+checkout_service depends_on payments_db
 ```
 
-"Chile" não compartilha nenhuma palavra com a pergunta. Está um salto além da
-entidade que a pergunta nomeia, e a relação é o mapa até lá.
+"eu-west-1" não compartilha nenhuma palavra com a pergunta, e `payments_db`
+também não — a pergunta nunca o nomeia. Está um salto além da entidade que *foi*
+nomeada, e a relação é o mapa até lá.
 
 ## Como o recall funciona
 
@@ -97,7 +117,7 @@ entre sinais independentes é, por si só, evidência.
 
 | canal | encontra |
 |---|---|
-| **bm25** | palavras, via FTS5. Insensível a acento, então "preco" acha "preço". |
+| **bm25** | palavras, via FTS5. Insensível a acento, então "andre" acha "André". |
 | **alias** | entidades que a pergunta nomeia diretamente, pela chave ou por outro nome. |
 | **semantic** | paráfrases, via embeddings estáticos compilados no binário. |
 | **graph** | fatos alcançados caminhando pelas relações a partir do que foi nomeado. |
@@ -118,34 +138,30 @@ Uma entidade é guardada sob uma chave, mas as pessoas perguntam com outras
 palavras.
 
 ```console
-$ brain remember --subject acme --predicate funcionarios --value 40
-$ brain remember --subject "Produto Brasília" --predicate preco --value 20
-$ brain remember --subject servidor --predicate porta --value 8080
+$ brain alias payments_db "the payments database"     # um nome que você declara
+"the_payments_database" now names payments_db
 
-$ brain alias acme "ACME Corp"           # um nome que você declara
-"acme_corp" now names acme
+$ brain recall "which team is andre on" --learn --limit 3
+André team platform
+checkout_service depends_on payments_db
+checkout_service owner platform-team
+(learned: "andre" names André)
 
-$ brain recall "quanto custa o produto brasilia" --learn
-Produto Brasília preco 20
-acme funcionarios 40
-servidor porta 8080
-(learned: "produto_brasilia" names Produto Brasília)
-
-$ brain entity "Produto Brasília"
-Produto Brasília (produto_brasília)
-  also: produto_brasilia (learned)
-  Produto Brasília preco 20
+$ brain entity "André"
+André (andré)
+  also: andre (learned)
+  André team platform
 ```
 
 A pergunta perdeu o acento, então não nomeou nada — identidade é exata, e
-`produto_brasilia` não é `produto_brasília`. O BM25 respondeu mesmo assim,
-porque a busca é a camada tolerante, e o nome que funcionou foi guardado.
+`andre` não é `andré`. O BM25 respondeu mesmo assim, porque a busca é a camada
+tolerante, e o nome que funcionou foi guardado.
 
 Os dois têm níveis de confiança bem diferentes, e essa separação sustenta o
 resto:
 
-- Um alias **declarado** decide identidade. Fatos futuros sobre "ACME Corp" caem
-  em `acme`.
+- Um alias **declarado** decide identidade. Fatos futuros sobre "the payments
+  database" caem em `payments_db`.
 - Um alias **aprendido** só amplia a busca. Um palpite que pudesse decidir
   identidade deixaria uma única pergunta bem formulada enxertar todo o histórico
   futuro de uma entidade no nó errado, sem nada em nenhuma saída denunciando isso.

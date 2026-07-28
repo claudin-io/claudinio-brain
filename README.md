@@ -19,33 +19,52 @@
 
 ---
 
-Give an agent a vector store and ask it what a product costs. It will find every
-price you ever wrote down and pick one. It has no way to know which of them is
-still true, because "the price is 20" and "the price *was* 20" are the same
+Give an agent a vector store and ask how a service authenticates. It will find
+every answer anyone ever wrote down and pick one. It has no way to know which of
+them is still true, because "we use JWT" and "we *used* JWT" are the same
 sentence to a similarity score.
 
 `brain` stores facts on a timeline instead of in a pile. Writing a new value does
 not overwrite the old one — it closes it. So one record answers both questions:
 
 ```console
-$ brain remember --subject produto_a --predicate preco --value 20 --at 2026-01-01
-created: produto_a preco 20
+$ brain remember --subject auth --predicate strategy --value "JWT" \
+    --at 2026-01-01 --source adr-004
+created: auth strategy JWT
 
-$ brain remember --subject produto_a --predicate preco --value 25 --at 2026-06-01
-superseded: produto_a preco 25
+$ brain remember --subject auth --predicate strategy --value "server-side sessions" \
+    --at 2026-06-01 --source adr-011
+superseded: auth strategy server-side sessions
 
-$ brain get produto_a preco
-produto_a preco 25
+$ brain get auth strategy
+auth strategy server-side sessions
 
-$ brain get produto_a preco --as-of 2026-03-01
-produto_a preco 20
+$ brain get auth strategy --as-of 2026-03-01
+auth strategy JWT
 
-$ brain history produto_a preco
-[2026-01-01T00:00:00Z] produto_a preco 20  (until 2026-06-01T00:00:00Z)
-[2026-06-01T00:00:00Z] produto_a preco 25  (current)
+$ brain history auth strategy
+[2026-01-01T00:00:00Z] auth strategy JWT  (until 2026-06-01T00:00:00Z)
+[2026-06-01T00:00:00Z] auth strategy server-side sessions  (current)
 ```
 
 Nothing was deleted, and nothing had to be re-embedded to make that work.
+
+## A fact is anything worth more than one session
+
+Subject, predicate, value. Nothing in the model is domain-specific — there is no
+schema to declare, and a predicate is just a word:
+
+```console
+$ brain remember --subject api_gateway --predicate timeout --value 30 --unit s
+$ brain remember --subject checkout_service --predicate owner --value "platform-team"
+$ brain remember --subject release_1_4 --predicate freeze_date --value 2026-08-15
+$ brain remember --subject André --predicate team --value "platform"
+```
+
+A decision and the reason for it, a config value, an owner, a deadline, a schema
+version, a constraint someone stated out loud, where in the codebase the real
+answer lives. Anything an agent would otherwise re-derive, guess at, or lose when
+the session ends.
 
 ## Why bitemporal
 
@@ -71,22 +90,23 @@ the gap.
 ## Relations are facts
 
 `link A rel B` is a fact whose object is an entity, so the graph inherits
-bitemporality for free — a supplier that changed is a closed interval, not a
+bitemporality for free — a dependency that moved is a closed interval, not a
 deleted row. It also means the answer to a question can live somewhere the
 question's words never reach:
 
 ```console
-$ brain link produto_a fornecido_por acme
-$ brain remember --subject acme --predicate pais --value "Chile"
+$ brain link checkout_service depends_on payments_db
+$ brain remember --subject payments_db --predicate region --value "eu-west-1"
 
-$ brain recall "de que pais vem o produto_a"
-acme pais Chile
-produto_a preco 25
-produto_a fornecido_por acme
+$ brain recall "which region does checkout_service data live in" --limit 3
+checkout_service owner platform-team
+payments_db region eu-west-1
+checkout_service depends_on payments_db
 ```
 
-"Chile" shares no word with the question. It is one hop past the entity the
-question names, and the relation is the map to it.
+"eu-west-1" shares no word with the question, and neither does `payments_db`,
+which the question never names. It is one hop past the entity that *was* named,
+and the relation is the map to it.
 
 ## How recall works
 
@@ -96,7 +116,7 @@ independent signals is itself evidence.
 
 | channel | finds |
 |---|---|
-| **bm25** | words, over FTS5. Accent-insensitive, so "preco" finds "preço". |
+| **bm25** | words, over FTS5. Accent-insensitive, so "andre" finds "André". |
 | **alias** | entities the question names outright, by key or by another name. |
 | **semantic** | paraphrases, via static embeddings compiled into the binary. |
 | **graph** | facts reached by walking relations out from what the question named. |
@@ -115,33 +135,29 @@ to exist at all.
 An entity is stored under one key, but people ask about it in other words.
 
 ```console
-$ brain remember --subject acme --predicate funcionarios --value 40
-$ brain remember --subject "Produto Brasília" --predicate preco --value 20
-$ brain remember --subject servidor --predicate porta --value 8080
+$ brain alias payments_db "the payments database"     # a name you declare
+"the_payments_database" now names payments_db
 
-$ brain alias acme "ACME Corp"           # a name you declare
-"acme_corp" now names acme
+$ brain recall "which team is andre on" --learn --limit 3
+André team platform
+checkout_service depends_on payments_db
+checkout_service owner platform-team
+(learned: "andre" names André)
 
-$ brain recall "quanto custa o produto brasilia" --learn
-Produto Brasília preco 20
-acme funcionarios 40
-servidor porta 8080
-(learned: "produto_brasilia" names Produto Brasília)
-
-$ brain entity "Produto Brasília"
-Produto Brasília (produto_brasília)
-  also: produto_brasilia (learned)
-  Produto Brasília preco 20
+$ brain entity "André"
+André (andré)
+  also: andre (learned)
+  André team platform
 ```
 
 The question dropped an accent, so it named nothing — identity is exact, and
-`produto_brasilia` is not `produto_brasília`. BM25 answered anyway, because
-search is the forgiving layer, and the name that worked was kept.
+`andre` is not `andré`. BM25 answered anyway, because search is the forgiving
+layer, and the name that worked was kept.
 
 The two are trusted very differently, and the split is load-bearing:
 
-- A **declared** alias decides identity. Later facts about "ACME Corp" land on
-  `acme`.
+- A **declared** alias decides identity. Later facts about "the payments
+  database" land on `payments_db`.
 - A **learned** alias only widens retrieval. A guess that could decide identity
   would let one well-phrased question graft an entity's entire future history
   onto the wrong node, with nothing in any output to show it happened.

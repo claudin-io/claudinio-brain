@@ -67,10 +67,14 @@ contract.
 
 ## Recording what you learn
 
+Anything with a subject, a property and a value. There is no schema to declare
+and no domain the model prefers:
+
 ```bash
-brain remember --subject produto_a --predicate preco --value 20
+brain remember --subject auth --predicate strategy --value "server-side sessions"
 brain remember --subject api_gateway --predicate timeout --value 30 --unit s
-brain remember --subject deploy --predicate responsavel --value "maria"
+brain remember --subject checkout_service --predicate owner --value "platform-team"
+brain remember --subject release_1_4 --predicate freeze_date --value 2026-08-15
 ```
 
 - `--subject` is the thing, `--predicate` is the property, `--value` is the
@@ -80,7 +84,7 @@ brain remember --subject deploy --predicate responsavel --value "maria"
   the timeline correctly instead of pretending it just happened.
 - `--source` says who claimed it. Pass it. Attribution is what makes a fact
   reviewable later.
-- `--locator '{"file":"src/pricing.rs","lines":"40-52"}'` records *where the
+- `--locator '{"file":"src/auth/session.rs","lines":"40-52"}'` records *where the
   answer actually lives*. Prefer a locator over pasting a wall of code into a
   fact: the brain is an index, not a warehouse.
 
@@ -100,9 +104,9 @@ something. Read the history before assuming your value is the right one.
 ## Reading
 
 ```bash
-brain get produto_a preco                       # what holds now
-brain get produto_a preco --as-of 2026-03-01    # what held then
-brain history produto_a preco                   # the whole trajectory
+brain get auth strategy                       # what holds now
+brain get auth strategy --as-of 2026-03-01    # what held then
+brain history auth strategy                   # the whole trajectory
 ```
 
 Use `recall` when you do not know the exact subject and predicate — it takes a
@@ -110,8 +114,8 @@ natural-language question and fuses four retrieval channels (words, entity
 names, meaning, and walking the graph):
 
 ```bash
-brain recall "quanto custa o produto_a" --json
-brain recall "what changed about the deploy owner" --history --json
+brain recall "how does the service authenticate" --json
+brain recall "what changed about who owns checkout" --history --json
 ```
 
 `recall` answers with what is **currently true** by default. `--as-of <when>`
@@ -121,16 +125,17 @@ appears in none of them — it was never true, so replaying it would be a lie.
 ## Relations
 
 A relation is a fact whose object is another entity, so it gets a timeline for
-free — a supplier that changed is a closed interval, not a deleted row.
+free — a dependency that moved is a closed interval, not a deleted row.
 
 ```bash
-brain link produto_a fornecido_por acme
-brain entity acme --neighbors --json
+brain link checkout_service depends_on payments_db
+brain entity payments_db --neighbors --json
 ```
 
 This is what lets an answer live where the question's words never reach. Asking
-"which country does produto_a come from" finds `acme pais Chile`, one hop away,
-sharing no word with the question.
+"which region does checkout_service data live in" finds `payments_db region
+eu-west-1`, one hop away, sharing no word with the question — and reaching an
+entity the question never named.
 
 ## Correcting yourself
 
@@ -155,11 +160,11 @@ inventing an answer for it.
 If the user calls something by a name the brain does not know, declare it:
 
 ```bash
-brain alias acme "ACME Corp"
+brain alias payments_db "the payments database"
 ```
 
-A declared alias decides identity — later facts about "ACME Corp" land on
-`acme`. There is also `brain recall "..." --learn`, which lets the brain keep the
+A declared alias decides identity — later facts about "the payments database"
+land on `payments_db`. There is also `brain recall "..." --learn`, which lets the brain keep the
 name a question used when the answer was unambiguous, but that is a guess and
 only ever widens search; it never decides where a fact is written.
 
@@ -181,7 +186,7 @@ Do not write:
 
 ## Gotchas
 
-- **Identity is exact; search is forgiving.** `preço` and `preco` are different
+- **Identity is exact; search is forgiving.** `André` and `andre` are different
   entities but either question finds either fact. When *writing*, be consistent
   with the spelling already in the brain — check with `brain entity <name>`
   first. Two spellings of one thing means two parallel histories, and that is
