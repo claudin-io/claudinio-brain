@@ -10,7 +10,29 @@ updates:
       # guarantee, so a bump is a schema decision and not a dependency update.
       - dependency-name: sqlite-vec
 
+      # Not a dependency -- a feature-unification lever. model2vec-rs requires
+      # `tokenizers ^0.21` with default-features off and no regex backend of its
+      # own, so *something* in the graph has to enable one. That something is our
+      # direct declaration, which supplies `onig` (C) and keeps `esaxx_fast`
+      # (C++) out of the tree.
+      #
+      # Bumping it breaks that. Two versions then coexist, unification no longer
+      # reaches 0.21.x, and it fails to compile with "One of the `onig`, or
+      # `fancy-regex` features must be enabled". Dependabot proposed exactly this
+      # in #4 and CI caught it.
+      #
+      # This version must track whatever model2vec-rs requires. Change it when
+      # model2vec-rs changes, never on its own.
+      - dependency-name: tokenizers
+
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: monthly
+    ignore:
+      # `dtolnay/rust-toolchain@1.95.0` in the msrv job is the MSRV itself, not
+      # an action version to keep current. Dependabot cannot tell the difference
+      # and proposed 1.100.0 in #1. Merging that would leave the job green while
+      # testing nothing -- the worst possible failure for a check whose entire
+      # purpose is to fail. The other three uses are `@stable` and need no bump.
+      - dependency-name: dtolnay/rust-toolchain

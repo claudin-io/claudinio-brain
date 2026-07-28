@@ -11,6 +11,28 @@ rediscover, recorded so they don't have to be.
 | sqlite-vec | v0.1.9, statically linked, no `.dylib` |
 | FTS5 + JSON1 + recursive CTE | present in the bundled amalgamation, no feature flag |
 
+## Two dependency "updates" that must never be taken
+
+Both were proposed by Dependabot within minutes of the repository going public,
+and both are traps rather than upgrades.
+
+**`tokenizers` is not a dependency.** It is a feature-unification lever, and its
+version has to track `model2vec-rs`, not crates.io. See the next section for what
+it is levering. Bumping it to 0.23 while `model2vec-rs` still requires `^0.21`
+puts two versions in the graph, unification stops reaching the older one, and it
+fails with *"One of the `onig`, or `fancy-regex` features must be enabled"* --
+because `model2vec-rs` declares `tokenizers` with no regex backend at all and
+relies on someone else to supply one.
+
+**`dtolnay/rust-toolchain@1.95.0` in the `msrv` job is the MSRV.** Dependabot
+sees a version-shaped ref and offers 1.100.0. Taking it would leave the job
+green while testing nothing, which is the worst possible outcome for a check
+whose only purpose is to fail. The three other uses of that action are `@stable`
+and are fine to bump.
+
+Both are in `.github/dependabot.yml`'s ignore lists with the reasoning inline,
+because a bare `ignore:` entry invites someone to helpfully remove it later.
+
 ## No C++ in the tree
 
 `model2vec-rs` → `tokenizers 0.21` pulls `esaxx-rs`, whose default `cpp` feature
