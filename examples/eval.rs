@@ -69,10 +69,12 @@ fn main() -> anyhow::Result<()> {
     let update = args.iter().any(|a| a == "--update-baseline");
 
     let suites = ["retrieval", "temporal", "graph"];
-    let ablations: [(&str, Vec<Channel>); 3] = [
+    let ablations: Vec<(&str, Vec<Channel>)> = vec![
         ("bm25", vec![Channel::Bm25]),
         ("alias", vec![Channel::Alias]),
-        ("bm25+alias", Channel::ALL.to_vec()),
+        ("semantic", vec![Channel::Semantic]),
+        ("bm25+alias", vec![Channel::Bm25, Channel::Alias]),
+        ("all", Channel::ALL.to_vec()),
     ];
 
     let mut results: BTreeMap<String, BTreeMap<String, Metrics>> = BTreeMap::new();

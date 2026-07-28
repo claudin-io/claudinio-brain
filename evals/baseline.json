@@ -8,6 +8,14 @@
       "mrr": 0.0,
       "top1_accuracy": 0.0
     },
+    "all": {
+      "cases": 8,
+      "recall@1": 0.0,
+      "recall@5": 1.0,
+      "recall@10": 1.0,
+      "mrr": 0.358,
+      "top1_accuracy": 0.0
+    },
     "bm25": {
       "cases": 8,
       "recall@1": 0.125,
@@ -23,6 +31,14 @@
       "recall@10": 0.75,
       "mrr": 0.313,
       "top1_accuracy": 0.0
+    },
+    "semantic": {
+      "cases": 8,
+      "recall@1": 0.0,
+      "recall@5": 0.875,
+      "recall@10": 0.875,
+      "mrr": 0.237,
+      "top1_accuracy": 0.0
     }
   },
   "retrieval": {
@@ -34,6 +50,14 @@
       "mrr": 0.65,
       "top1_accuracy": 0.65
     },
+    "all": {
+      "cases": 20,
+      "recall@1": 0.975,
+      "recall@5": 1.0,
+      "recall@10": 1.0,
+      "mrr": 0.95,
+      "top1_accuracy": 0.95
+    },
     "bm25": {
       "cases": 20,
       "recall@1": 0.975,
@@ -49,6 +73,14 @@
       "recall@10": 1.0,
       "mrr": 0.95,
       "top1_accuracy": 0.95
+    },
+    "semantic": {
+      "cases": 20,
+      "recall@1": 0.825,
+      "recall@5": 1.0,
+      "recall@10": 1.0,
+      "mrr": 0.842,
+      "top1_accuracy": 0.8
     }
   },
   "temporal": {
@@ -60,6 +92,14 @@
       "mrr": 0.905,
       "top1_accuracy": 0.905
     },
+    "all": {
+      "cases": 21,
+      "recall@1": 0.909,
+      "recall@5": 1.0,
+      "recall@10": 1.0,
+      "mrr": 0.952,
+      "top1_accuracy": 0.952
+    },
     "bm25": {
       "cases": 21,
       "recall@1": 0.813,
@@ -69,6 +109,14 @@
       "top1_accuracy": 0.857
     },
     "bm25+alias": {
+      "cases": 21,
+      "recall@1": 0.909,
+      "recall@5": 1.0,
+      "recall@10": 1.0,
+      "mrr": 0.952,
+      "top1_accuracy": 0.952
+    },
+    "semantic": {
       "cases": 21,
       "recall@1": 0.909,
       "recall@5": 1.0,

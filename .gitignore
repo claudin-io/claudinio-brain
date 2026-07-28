@@ -3,5 +3,7 @@
 *.db-wal
 *.db-shm
 .brain/
-# Model weights are include_bytes!'d at build time; keep the raw downloads out.
-/models/*.safetensors
+
+# The f32 table is the download; only the int8 quantization is compiled in.
+# 30 MB of redundant weights has no business in the history.
+models/**/model.safetensors

@@ -132,3 +132,26 @@ BEGIN
   INSERT INTO fact_fts(rowid, statement, search_text)
   VALUES (new.id, new.statement, new.search_text);
 END;
+
+-- The semantic channel.
+--
+-- `fact_embedding` is the source of truth: an ordinary table, no extension
+-- required, so a brain stays readable even where `sqlite-vec` fails to build.
+-- `fact_vec` below is a derived index rebuilt by `brain reindex`; sqlite-vec is
+-- a 0.1.x crate with no on-disk stability guarantee, so the recovery path for a
+-- format change is drop-and-rebuild rather than a migration.
+CREATE TABLE fact_embedding (
+  fact_id   INTEGER PRIMARY KEY REFERENCES fact(id),
+  model_id  TEXT NOT NULL,   -- so a model change is detectable, not silent
+  embedding BLOB NOT NULL    -- int8, one byte per dimension
+) STRICT;
+
+-- vec0 metadata filters support equality and ordering but NOT `IS NULL`, which
+-- is why "currently holds" is the boolean `is_open` rather than a nullable
+-- valid_to. `scope` is a partition key so a large brain shards by namespace.
+CREATE VIRTUAL TABLE fact_vec USING vec0(
+  fact_id   INTEGER PRIMARY KEY,
+  embedding int8[256],
+  is_open   INTEGER,
+  scope     TEXT PARTITION KEY
+);

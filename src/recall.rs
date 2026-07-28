@@ -9,6 +9,7 @@
 //! what is true, not with everything ever recorded.
 
 use crate::brain::{Brain, BrainError, Fact};
+use crate::index::{Vec0Index, VecFilter, VectorIndex};
 use crate::norm;
 use jiff::Timestamp;
 use rusqlite::{Connection, params_from_iter};
@@ -24,10 +25,13 @@ pub enum Channel {
     Bm25,
     /// An exact hit on a normalized entity key or alias.
     Alias,
+    /// Nearest neighbours in static-embedding space. The only channel that can
+    /// match a paraphrase sharing no words with the fact.
+    Semantic,
 }
 
 impl Channel {
-    pub const ALL: &'static [Channel] = &[Channel::Bm25, Channel::Alias];
+    pub const ALL: &'static [Channel] = &[Channel::Bm25, Channel::Alias, Channel::Semantic];
 }
 
 /// How the timeline is filtered.
@@ -105,6 +109,19 @@ const RRF_K: f64 = 60.0;
 /// How many candidates each channel contributes before fusion.
 const CHANNEL_DEPTH: usize = 50;
 
+/// Minimum cosine similarity for a semantic hit to count.
+///
+/// Nearest-neighbour search always returns *something* -- there is no such thing
+/// as "no match" in a vector index. Without a floor, a nonsense question returns
+/// the k least-unrelated facts, `recall` stops ever being empty, and the noise
+/// gets full RRF credit that can outvote a genuine lexical hit.
+///
+/// 0.20 was calibrated, not guessed. Sweeping 0.20/0.25/0.30/0.35 against the
+/// suites: every value keeps a nonsense query empty, but anything above 0.20
+/// costs graph Recall@10 (1.000 at 0.20, 0.875 at 0.35) by cutting off the
+/// one-hop answers that sit furthest out. Any change here must be re-measured.
+const MIN_SEMANTIC_COSINE: f32 = 0.20;
+
 impl Brain {
     /// Retrieves facts relevant to a question.
     pub fn recall(&self, q: &RecallQuery) -> std::result::Result<Vec<Hit>, BrainError> {
@@ -118,6 +135,7 @@ impl Brain {
             let ids = match channel {
                 Channel::Bm25 => bm25_channel(conn, &q.text, &filter)?,
                 Channel::Alias => alias_channel(conn, &q.text, &filter)?,
+                Channel::Semantic => self.semantic_channel(&q.text, q)?,
             };
             for (rank, id) in ids.into_iter().enumerate() {
                 let e = fused.entry(id).or_insert((0.0, Vec::new()));
@@ -151,6 +169,71 @@ impl Brain {
         }
         Ok(hits)
     }
+}
+
+impl Brain {
+    /// Nearest neighbours by embedding.
+    ///
+    /// Uses the `vec0` index, whose metadata filter can express "currently
+    /// holds" but not the full as-of predicate. Anything richer than that is
+    /// re-checked against the facts afterwards rather than pushed into the
+    /// index, because a vector index that tries to be a temporal query engine is
+    /// a vector index that drifts out of step with one.
+    fn semantic_channel(
+        &self,
+        text: &str,
+        q: &RecallQuery,
+    ) -> std::result::Result<Vec<i64>, BrainError> {
+        if text.trim().is_empty() {
+            return Ok(Vec::new());
+        }
+        let vector = self.embedder().embed_one(text)?;
+        let filter = VecFilter {
+            open_only: matches!(q.when, When::Now),
+            scope: q.scope.clone(),
+        };
+
+        // Over-fetch when a post-filter will discard rows, so the temporal modes
+        // do not silently return fewer candidates than the other channels.
+        let depth = match q.when {
+            When::Now => CHANNEL_DEPTH,
+            _ => CHANNEL_DEPTH * 4,
+        };
+        let index = Vec0Index::new(self.store().conn(), self.embedder().dim());
+        let raw = index.search(&vector, depth, &filter)?;
+
+        let mut out = Vec::with_capacity(raw.len());
+        for (id, distance) in raw {
+            if cosine_from_l2(distance) < MIN_SEMANTIC_COSINE {
+                // Distances come back ascending, so the first rejection ends it.
+                break;
+            }
+            let f = self.fact(id)?;
+            let keep = match q.when {
+                When::Now => f.is_open(),
+                When::AsOf(t) => f.covers(t),
+                When::History => f.retracted_at.is_none(),
+            };
+            if keep {
+                out.push(id);
+            }
+            if out.len() >= CHANNEL_DEPTH {
+                break;
+            }
+        }
+        Ok(out)
+    }
+}
+
+/// Recovers cosine similarity from the L2 distance `vec0` reports.
+///
+/// Vectors are L2-normalized before int8 packing, so each component is scaled by
+/// 127 and `d^2 = 2 * 127^2 * (1 - cos)`. Inverting that is exact up to
+/// quantization error, and avoids a second pass over the vectors just to score
+/// them a different way.
+fn cosine_from_l2(distance: f32) -> f32 {
+    const SCALE: f32 = 127.0;
+    1.0 - (distance * distance) / (2.0 * SCALE * SCALE)
 }
 
 /// The SQL fragment restricting which facts may answer.

@@ -78,6 +78,7 @@ proptest = "1"
 tempfile = "3"
 assert_cmd = "2"
 predicates = "3"
+safetensors = "0.8.0"
 
 [features]
 default = ["mcp"]

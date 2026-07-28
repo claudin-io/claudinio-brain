@@ -15,7 +15,9 @@
 mod types;
 
 use crate::clock::Clock;
+use crate::embed::{Embedder, StaticEmbedder};
 use crate::ids::IdGen;
+use crate::index;
 use crate::norm;
 use crate::store::{Store, StoreError};
 use jiff::Timestamp;
@@ -42,6 +44,9 @@ pub enum BrainError {
 
     #[error(transparent)]
     Sqlite(#[from] rusqlite::Error),
+
+    #[error("embedding failed: {0}")]
+    Embedding(String),
 
     #[error("malformed locator JSON stored for fact {id}: {source}")]
     BadLocator {
@@ -72,6 +77,9 @@ pub struct Brain {
     store: Store,
     clock: Box<dyn Clock>,
     ids: Box<dyn IdGen>,
+    /// Built once per process. Loading the table is the expensive part; encoding
+    /// afterwards is a lookup, so writes never need to defer embedding.
+    embedder: Box<dyn Embedder>,
 }
 
 impl Brain {
@@ -82,7 +90,12 @@ impl Brain {
         ids: Box<dyn IdGen>,
     ) -> Result<Self> {
         let store = Store::init(path, label, clock.as_ref(), ids.as_ref())?;
-        Ok(Self { store, clock, ids })
+        Ok(Self {
+            store,
+            clock,
+            ids,
+            embedder: Box::new(StaticEmbedder::bundled()?),
+        })
     }
 
     pub fn open(
@@ -94,11 +107,16 @@ impl Brain {
             store: Store::open(path)?,
             clock,
             ids,
+            embedder: Box::new(StaticEmbedder::bundled()?),
         })
     }
 
     pub fn store(&self) -> &Store {
         &self.store
+    }
+
+    pub fn embedder(&self) -> &dyn Embedder {
+        self.embedder.as_ref()
     }
 
     fn conn(&self) -> &Connection {
@@ -206,6 +224,9 @@ impl Brain {
                 "UPDATE fact SET valid_to = ? WHERE id = ?",
                 params![micros(valid_from), p.id],
             )?;
+            // The text did not change, so the embedding stands; only the index's
+            // view of "still holds" has to follow.
+            index::mark_closed(tx, p.id)?;
         }
 
         let new_id = self.insert_fact(tx, w, successor.as_ref().map(|s| s.valid_from), true)?;
@@ -282,7 +303,29 @@ impl Brain {
                 a.locator.as_ref().map(|v| v.to_string()),
             ],
         )?;
-        Ok(tx.last_insert_rowid())
+        let id = tx.last_insert_rowid();
+
+        // Embed inside the same transaction as the fact. A vector written
+        // separately could be lost on a crash, leaving a fact the semantic
+        // channel can never find -- invisible, and undetectable without a scan.
+        let vector = self.embedder.embed_one(&statement)?;
+        index::store(
+            tx,
+            id,
+            &vector,
+            valid_to.is_none(),
+            w.a.scope.as_deref(),
+            self.embedder.model_id(),
+        )?;
+        Ok(id)
+    }
+
+    /// Rebuilds the derived vector index from the stored embeddings.
+    pub fn reindex(&self) -> Result<usize> {
+        let tx = self.conn().unchecked_transaction()?;
+        let n = index::rebuild(&tx)?;
+        tx.commit()?;
+        Ok(n)
     }
 
     /// Records a relation. Relations are facts, so this is `remember` with an
@@ -544,6 +587,7 @@ fn retract_fact(conn: &Connection, id: i64, now: Timestamp, reason: Option<&str>
          WHERE id = ?3",
         params![micros(now), reason, id],
     )?;
+    index::mark_closed(conn, id)?;
     Ok(())
 }
 
