@@ -19,8 +19,8 @@ use uuid::Uuid;
 
 /// Bumped whenever the on-disk layout changes in a way older binaries cannot read.
 /// v2 added the bitemporal fact model, v3 the FTS5 index, v4 the vector index,
-/// v5 the relational flag on `predicate`.
-pub const SCHEMA_VERSION: i64 = 5;
+/// v5 the relational flag on `predicate`, v6 the predicate-first index `which` needs.
+pub const SCHEMA_VERSION: i64 = 6;
 
 const SCHEMA: &str = include_str!("schema.sql");
 
@@ -234,6 +234,15 @@ fn migrate(conn: &Connection, from: i64) -> Result<()> {
         // every predicate an old brain holds keeps storing objects exactly as it
         // did until somebody says otherwise.
         tx.execute_batch("ALTER TABLE predicate ADD COLUMN relational INTEGER NOT NULL DEFAULT 0")?;
+    }
+
+    if from < 6 {
+        // Pure addition: an index changes no row, so an older binary that has
+        // never heard of `which` still reads this file correctly.
+        tx.execute_batch(
+            "CREATE INDEX IF NOT EXISTS fact_by_predicate
+               ON fact(predicate, object_text, object_num)",
+        )?;
     }
 
     tx.execute(

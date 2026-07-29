@@ -88,6 +88,42 @@ reabre o que o fato retratado tinha fechado. "Isso estava errado" deixa aquele
 período genuinamente desconhecido, e inventar uma resposta seria pior do que
 admitir a lacuna.
 
+## Um fato pode carregar o próprio fim
+
+O `valid_to` era algo que só um *segundo* fato podia escrever: você encerrava uma
+afirmação superando-a. Isso decidia em silêncio para que o brain servia, porque
+tudo cujo fim já era conhecido de antemão — um freeze que levanta na sexta, um
+token válido por uma hora, um estado que ninguém vai voltar para corrigir — tinha
+que ser revisitado à mão ou ficava de fora.
+
+```console
+$ brain remember --subject release_1_4 --predicate freeze --value on --until 2026-08-15
+created: release_1_4 freeze on
+
+$ brain get release_1_4 freeze                      # antes do dia 15
+release_1_4 freeze on
+
+$ brain get release_1_4 freeze                      # depois, sem nada escrito no meio
+(nothing known)
+
+$ brain history release_1_4 freeze
+[2026-08-01T00:00:00Z] release_1_4 freeze on  (until 2026-08-15T00:00:00Z)
+```
+
+Ninguém escreveu nada e a resposta mudou. Reafirmar com um `--until` *posterior*
+empurra o fim para frente, então um fato de vida curta se mantém vivo por
+repetição em vez de ser reescrito; um anterior é ignorado, então um heartbeat
+nunca mata o que foi mandado manter vivo. E um fim que passaria da afirmação
+seguinte é cortado onde aquela começa — o `--until` estreita e nunca alarga,
+porque dois fatos cobrindo o mesmo instante é a única coisa que essa linha do
+tempo existe para impedir.
+
+**"Agora" quer dizer agora.** O valor que vale é aquele cujo intervalo contém
+este instante, que é exatamente o `--as-of` contra o relógio. Um preço anunciado
+para janeiro é a coisa mais nova que o brain sabe e não é o preço de hoje; um
+freeze que levantou na sexta continua sendo a coisa mais nova que ele sabe no
+sábado. Os dois liam como atuais antes.
+
 ## Relações são fatos
 
 `link A rel B` é um fato cujo objeto é uma entidade, então o grafo herda
@@ -140,6 +176,59 @@ O canal semântico é uma tabela de **embeddings estáticos** — uma consulta
 token-para-vetor, não um transformer. Sem runtime ONNX, sem download, sem
 toolchain C++ e sem amostragem, que é o que torna o recall reproduzível o
 bastante para as baselines de eval existirem.
+
+## Perguntando sobre um conjunto
+
+O `get` precisa de um sujeito e o `recall` chuta um, então nenhum dos dois
+responde *quais coisas* — quais serviços um time é dono, o que ainda está aberto,
+o que não tem fonte. Essa é uma pergunta de outra forma, não uma versão mais
+difícil da mesma, e nenhuma quantidade de ranking a produz.
+
+```console
+$ brain which status open
+fix_login status open
+write_docs status open
+
+$ brain which due --order-by value          # ISO-8601 ordena cronologicamente
+write_docs due 2026-03-09
+fix_login due 2026-08-15
+
+$ brain which owner --entity platform-team  # por identidade: outros nomes contam
+checkout_service owner platform-team
+```
+
+O que separa isso do `recall` não é a frase, é o que a resposta promete. O
+`recall` ranqueia, devolve os melhores poucos, e não tem como dizer o que deixou
+de fora. O `which` devolve tudo que casa e reporta `matched` ao lado, então um
+agente consegue distinguir *estas são as tarefas abertas* de *estas são dez das
+tarefas abertas* e agir sobre o conjunto como conjunto. Filtre do jeito que
+escreveu: `--value` para um literal, `--entity` para casar por identidade.
+
+### Coisas que giram rápido
+
+Uma consulta de conjunto e um fato que se fecha sozinho são, juntos, o suficiente
+para manter uma lista de tarefas num brain — o que a orientação antiga dizia para
+não fazer. Ela mirava na coisa errada: uma tarefa que chega em `done` não é
+transitória, é um intervalo fechado com duração, dono e motivo — justamente a
+parte que um checkbox joga fora. O que faltava era como ler a lista de volta.
+
+```console
+$ brain remember --subject fix_login --predicate status --value open --scope todo
+$ brain which status open --scope todo
+$ brain recall "como a gente autentica" --not-scope todo
+```
+
+Nada é apagado aqui, e todo fato cai nos mesmos dois índices que toda pergunta
+percorre, então um scope é como o trabalho de alto giro é impedido de competir
+para sempre com o conhecimento durável. O `--not-scope` é a metade que faltava: o
+`--scope` só sabia estreitar para dentro.
+
+Uma armadilha que vale nomear. O `brain lint` vai notar que várias tarefas
+compartilham `status open` e sugerir promover `open` a nó para que se possa
+alcançar coisas através dele. Não faça: a travessia se recusa de propósito a
+expandir *através* de um hub de grau alto, então a resposta via grafo funciona até
+umas cinquenta tarefas e depois volta silenciosamente vazia. É essa a falha que o
+`which` existe para substituir.
 
 ## Nomes
 
@@ -258,13 +347,18 @@ remember   Registra um fato
 link       Registra uma relação entre duas entidades
 get        Lê o valor atual, ou o valor num instante passado
 recall     Busca no brain com uma pergunta em linguagem natural
+which      Lista quais sujeitos têm um predicado, e qual é o valor
 history    Mostra a trajetória completa de um par sujeito/predicado
 entity     Mostra o que se sabe de uma entidade, e a que ela se conecta
 why        Mostra de onde um fato veio e o que aconteceu com ele
 retract    Marca um fato como nunca tendo sido verdade
 alias      Dá outro nome a uma entidade, lista os nomes, ou remove um
+lint       Reporta o que está estruturalmente errado: relações guardadas como
+           string, entidades que nada alcança, uma coisa sob dois nomes
+repair     Corrige como os fatos são guardados, sem mudar o que eles dizem
 reindex    Reconstrói o índice vetorial a partir dos embeddings guardados
-predicate  Corrige a cardinalidade de um predicado
+predicate  Corrige o que um predicado é: quantos valores ele tem ao mesmo
+           tempo, e se o objeto dele nomeia uma coisa ou é um literal
 studio     Abre o brain num visualizador e editor 3D, servido do localhost
 export     Escreve o brain num único arquivo HTML autocontido
 ```
@@ -289,10 +383,13 @@ brain export        # a mesma página num HTML só, somente leitura, offline
 
 Um nó é uma entidade. Uma aresta é um fato cujo objeto é outra entidade — então
 arestas carregam os dois eixos de tempo, como tudo aqui. Uma aresta que
-**terminou** é desenhada como um fantasma tracejado em vez de apagada, e uma que
-foi **retratada** fica escondida até você pedir, porque ela nunca foi verdade.
+**terminou** é desenhada como um fantasma tracejado em vez de apagada, uma que
+está **expirando** carrega o próprio fim e continua sendo a resposta até ele
+chegar, uma que **ainda não é verdade** está datada à frente e fica à vista
+mesmo assim, e uma que foi **retratada** fica escondida até você pedir, porque
+ela nunca foi verdade.
 
-Quatro partes fazem o trabalho:
+Cinco partes fazem o trabalho:
 
 **A régua de valid time.** Arraste e o grafo se remonta no que era verdade
 naquele instante; relações aparecem e somem sob o cursor. É o `--as-of` virando
@@ -317,6 +414,13 @@ concordância que o RRF premia, visível. Na imagem acima, "de que pais vem o
 bourbon amarelo" é respondida por `Fazenda Serra Azul pais Brasil`, e a etiqueta
 `graph` nele é a caminhada que chegou lá: o país está a um pulo da entidade que
 a pergunta nomeou.
+
+**A consulta de conjunto.** Clique num predicado na barra e todo sujeito que o
+tem é selecionado, no grafo e como lista. Essa é a única pergunta que não se lê
+num grafo — um nó mostra o que ele tem, e nada mostra quais nós têm uma coisa
+dada — então ela era tão invisível aqui quanto era impossível de fazer na CLI. A
+lista diz "todos eles", que é a propriedade que a separa do trace de recall
+acima dela.
 
 **O editor.** Só no `brain studio`. Registrar um valor não sobrescreve o antigo,
 e você vê o intervalo fechar enquanto outro abre — o modelo se ensina sozinho.

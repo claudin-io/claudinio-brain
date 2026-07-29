@@ -5,7 +5,9 @@
 # of each thing that is hard to see in a list and obvious in a picture:
 #
 #   * a price superseded twice, and a fourth value dated in the future, which is
-#     open without being true yet;
+#     the newest thing known without being true yet;
+#   * a discount that carries its own end, so it stops being the answer on the
+#     date it names with nobody having to come back for it;
 #   * a supplier that changed, so one edge is a closed interval rather than a
 #     deleted row;
 #   * a fact that was never true, retracted rather than overwritten, leaving the
@@ -47,8 +49,10 @@ say "produtos e preços"
 b remember --subject "Bourbon Amarelo" --predicate preco --value 32 --unit BRL --at 2025-01-15
 b remember --subject "Bourbon Amarelo" --predicate preco --value 38 --unit BRL --at 2025-09-01
 b remember --subject "Bourbon Amarelo" --predicate preco --value 41 --unit BRL --at 2026-03-01
-# Dated ahead: the newest thing the brain knows, and not yet true. `get` returns
-# it, `--as-of` today does not, and the studio rings it in violet.
+# Dated ahead: the newest thing the brain knows, and not today's price. Neither
+# `get` nor `--as-of` today returns it -- "now" means the instant you are asking
+# about -- and the studio keeps it in view anyway, ringed in violet, because what
+# is scheduled is a thing you open a viewer to find out.
 b remember --subject "Bourbon Amarelo" --predicate preco --value 45 --unit BRL --at 2026-11-01
 b remember --subject "Bourbon Amarelo" --predicate torra --value "média" --at 2025-01-15
 
@@ -58,6 +62,14 @@ b remember --subject "Catuaí Vermelho" --predicate torra --value "escura" --at 
 
 b remember --subject "Geisha Especial" --predicate preco --value 120 --unit BRL --at 2025-06-01
 b remember --subject "Geisha Especial" --predicate torra --value "clara" --at 2025-06-01
+
+say "uma promoção que termina sozinha"
+# A fact that carries its own end. Nothing has to be written for this to stop
+# being the answer on the day it names, which is what makes something short-lived
+# safe to record at all. Until then the studio draws it in yellow: still true,
+# with its end already on it.
+b remember --subject "Geisha Especial" --predicate desconto --value 15 --unit % \
+  --at 2026-07-01 --until 2027-06-01
 
 say "fornecedores"
 b remember --subject "Fazenda Serra Azul" --predicate pais --value "Brasil" --at 2025-01-10

@@ -29,7 +29,10 @@ fn brain(tmp: &TempDir) -> Brain {
     Brain::init(
         &tmp.path().join("t.db"),
         "kin",
-        Box::new(StepClock::new(ts("2026-01-01T00:00:00Z"), 1000)),
+        // After every instant this file writes at. `a_value_that_closed_stops_
+        // making_kin` depends on it outright: the anchor's change to 10% has to be
+        // in the past for 10% to be what it currently shares with anything.
+        Box::new(StepClock::new(ts("2026-07-01T00:00:00Z"), 1000)),
         Box::new(SeededIdGen::new(1)),
     )
     .unwrap()

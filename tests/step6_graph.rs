@@ -27,7 +27,9 @@ fn brain(tmp: &TempDir, label: &str) -> Brain {
     Brain::init(
         &tmp.path().join("t.db"),
         label,
-        Box::new(StepClock::new(ts("2026-01-01T00:00:00Z"), 1000)),
+        // After every instant this file links at, so the edges it writes are
+        // actually in force when a walk asks about now.
+        Box::new(StepClock::new(ts("2026-07-01T00:00:00Z"), 1000)),
         Box::new(SeededIdGen::new(1)),
     )
     .unwrap()

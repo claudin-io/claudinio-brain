@@ -1,6 +1,6 @@
 ---
 name: claudinio-brain
-description: Give the agent durable, time-aware memory backed by the `brain` CLI — record facts, decisions, config values and relations, then recall what is true now or what was true at any past instant. Use when the user says remember this, what did we decide, what is the current value, what was it before, what changed, why did it change, or when a fact learned in one session must survive into the next. Also use before answering from assumption about a project-specific value (a port, an owner, a price, a deadline) that the brain may already hold.
+description: Give the agent durable, time-aware memory backed by the `brain` CLI — record facts, decisions, config values and relations, then recall what is true now or what was true at any past instant, and list every subject that matches. Use when the user says remember this, what did we decide, what is the current value, what was it before, what changed, why did it change, which ones are still open, what is due, who owns what, or when a fact learned in one session must survive into the next. Also use for anything short-lived that should stop being true on its own, and before answering from assumption about a project-specific value (a port, an owner, a price, a deadline) that the brain may already hold.
 license: MIT
 compatibility: Requires the `brain` binary on PATH. If it is missing, this skill installs it — one prebuilt binary for macOS, Linux or Windows, no toolchain needed. Local only; `brain` itself makes no network requests.
 metadata:
@@ -85,6 +85,11 @@ brain remember --subject release_1_4 --predicate freeze_date --value 2026-08-15
 - `--at 2026-01-01` says when it became true in the world. Leave it off for
   "now". Use it whenever you learn something late — a backdated write slots into
   the timeline correctly instead of pretending it just happened.
+- `--until 2026-08-15` says when it *stops* being true, when you already know.
+  The fact closes itself then, with nobody having to come back for it. Reach for
+  it for anything short-lived — a freeze that lifts, a token that expires, a
+  state you will not be around to correct. Reasserting with a later `--until`
+  pushes the end back, so such a fact can be kept alive by repetition.
 - `--source` says who claimed it. Pass it. Attribution is what makes a fact
   reviewable later.
 - `--locator '{"file":"src/auth/session.rs","lines":"40-52"}'` records *where the
@@ -125,6 +130,28 @@ brain recall "what changed about who owns checkout" --history --json
 `recall` answers with what is **currently true** by default. `--as-of <when>`
 travels in time; `--history` returns closed intervals too. A retracted fact
 appears in none of them — it was never true, so replaying it would be a lie.
+
+### Asking about a set
+
+`get` needs a subject and `recall` guesses at one, so use `which` for the
+questions that are about *which things* rather than about one thing:
+
+```bash
+brain which status open --json                 # every subject whose status is open
+brain which owner --entity maria --json        # by identity, so other names count
+brain which due --order-by value --json        # ISO-8601 sorts chronologically
+brain which status open --as-of 2026-03-01     # the list as it stood then
+```
+
+**Use `which`, not `recall`, whenever you need *all* of something.** `recall`
+ranks and returns the best few and cannot tell you what it left out. `which`
+returns everything that matches and reports `matched` next to it, so comparing
+`matched` against the number of facts returned tells you whether you are holding
+the complete set. Acting on a ranked top-ten as though it were a whole list is
+the mistake this exists to prevent.
+
+Filter the way you wrote: `--value` for a literal, `--entity` to match an
+entity-valued object by identity.
 
 ## Relations
 
@@ -224,19 +251,44 @@ only ever widens search; it never decides where a fact is written.
 
 ## When to write a fact
 
-Write when the answer is **stable, specific and worth more than one session**:
-a decision and its reason, a config value, an owner, a deadline, a version, a
-constraint the user stated, where something lives in the codebase.
+Write when something will later ask about the answer **by name**, or when a set
+query will select it: a decision and its reason, a config value, an owner, a
+deadline, a version, a constraint the user stated, where something lives in the
+codebase.
 
 Do not write:
 
 - Anything already in the repository or in git history. The brain is for what
   the code does not record.
-- Transient state ("the test is currently failing").
+- Anything that supersedes itself faster than anyone reads it. This is the real
+  test, and it is not the same as "transient": forty writes a day means nobody
+  will ever ask what the value was on March 3, so the history is noise and the
+  churn competes with everything else forever. If the state is short-lived but
+  genuinely worth answering, give it an `--until` and let it close itself.
 - Long prose. One fact, one claim. If it needs a paragraph, store a locator to
   the paragraph.
 - Anything the user did not actually assert. A guess recorded as a fact is worse
   than no memory at all, because the next session will trust it.
+
+**A finished task is not transient.** `status: done` is a closed interval with a
+start, a duration, an owner and a reason — the part a checkbox throws away. Task
+lists are a fine thing to keep here now that `which` can read one back:
+
+```bash
+brain remember --subject fix_login --predicate status --value open --scope todo
+brain remember --subject fix_login --predicate due --value 2026-08-15 --scope todo
+brain remember --subject fix_login --predicate status --value done --scope todo
+brain which status open --scope todo --json          # the list
+brain history fix_login status --json                # opened when, closed when
+brain recall "how do we authenticate" --not-scope todo
+```
+
+Two rules for it. Put churn in a `--scope` and pass `--not-scope` on unrelated
+questions, because nothing is ever deleted and every fact shares the indexes every
+question searches. And **do not promote a status value to an entity** even though
+`brain lint` will suggest it: traversal refuses to expand through a high-degree
+hub, so `brain entity open --neighbors` works up to about fifty tasks and then
+silently returns nothing. Use `which`.
 
 ## Gotchas
 
@@ -257,7 +309,7 @@ Do not write:
 ## If MCP is available instead
 
 `brain serve` exposes the same operations as MCP tools (`remember`, `link`,
-`recall`, `get`, `history`, `entity`, `why`, `retract`, `alias`). When those
+`recall`, `which`, `get`, `history`, `entity`, `why`, `retract`, `alias`). When those
 tools are connected, prefer them over shelling out — same core, structured
 results, no output parsing. Everything above still applies: the tools are the
 same operations with the same rules.
@@ -265,8 +317,8 @@ same operations with the same rules.
 ## Full command list
 
 ```
-init  where  stats  lint  remember  link  get  recall  history
-entity  why  retract  alias  reindex  predicate  repair
+init  where  stats  lint  remember  link  get  recall  which
+history  entity  why  retract  alias  reindex  predicate  repair
 ```
 
 `brain <command> --help` for the flags. `--brain <path>`, `--use <name>` and

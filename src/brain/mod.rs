@@ -40,6 +40,139 @@ pub struct EntityView {
     pub neighbours: Vec<Neighbour>,
 }
 
+/// A question about a *set*: which subjects hold this predicate, optionally with
+/// this value, at some instant.
+///
+/// The counterpart to [`crate::recall::RecallQuery`], and deliberately not a
+/// variant of it. `recall` answers with what is *relevant* -- it ranks, it guesses
+/// at intent, and it truncates -- which is right for a question and wrong for a
+/// list. This answers with what *matches*, and reports how much matched so the
+/// caller can tell a complete list from the top of one.
+#[derive(Debug, Clone)]
+pub struct WhichQuery {
+    pub predicate: String,
+    /// The value to match, or `None` for every subject holding the predicate at
+    /// all. A literal is matched exactly, the way it was written.
+    pub value: Option<Object>,
+    pub when: When,
+    pub order: Order,
+    pub desc: bool,
+    pub limit: usize,
+    pub scope: Option<String>,
+}
+
+impl WhichQuery {
+    pub fn new(predicate: impl Into<String>) -> Self {
+        Self {
+            predicate: predicate.into(),
+            value: None,
+            when: When::Now,
+            order: Order::Subject,
+            desc: false,
+            limit: 200,
+            scope: None,
+        }
+    }
+
+    pub fn value(mut self, o: Object) -> Self {
+        self.value = Some(o);
+        self
+    }
+
+    pub fn when(mut self, w: When) -> Self {
+        self.when = w;
+        self
+    }
+
+    pub fn order(mut self, o: Order) -> Self {
+        self.order = o;
+        self
+    }
+
+    pub fn desc(mut self, yes: bool) -> Self {
+        self.desc = yes;
+        self
+    }
+
+    pub fn limit(mut self, n: usize) -> Self {
+        self.limit = n;
+        self
+    }
+
+    pub fn scope(mut self, s: impl Into<String>) -> Self {
+        self.scope = Some(s.into());
+        self
+    }
+}
+
+/// What a set answer is sorted by.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Order {
+    /// The subject's identity key. The default, because a list of things reads
+    /// best in the order the things are named.
+    Subject,
+    /// The object. Numbers sort numerically and text lexicographically, which is
+    /// what makes an ISO-8601 date usable as a deadline without a date type.
+    Value,
+    /// When each fact became true, oldest first.
+    Since,
+}
+
+impl Order {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Subject => "subject",
+            Self::Value => "value",
+            Self::Since => "since",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "subject" => Some(Self::Subject),
+            "value" => Some(Self::Value),
+            "since" => Some(Self::Since),
+            _ => None,
+        }
+    }
+
+    /// The sort keys, in order. `f.id` is appended by the caller and is always
+    /// ascending, so equal keys never reorder between runs.
+    fn keys(self) -> &'static [&'static str] {
+        match self {
+            Self::Subject => &["e.key"],
+            Self::Value => &["f.object_num", "f.object_text"],
+            Self::Since => &["f.valid_from"],
+        }
+    }
+}
+
+/// The facts a set question matched, and how many there were.
+///
+/// `matched` is the whole point of this type. A vector store can always return
+/// ten things and can never tell you whether ten was all of them; an agent
+/// deciding what to do next needs to know the difference between "these are the
+/// open tasks" and "these are ten of the open tasks".
+#[derive(Debug, Clone, Serialize)]
+pub struct WhichAnswer {
+    pub facts: Vec<Fact>,
+    /// How many facts satisfied the query, ignoring `limit`.
+    pub matched: i64,
+    /// Whether `limit` cut the answer short.
+    pub truncated: bool,
+}
+
+impl WhichAnswer {
+    fn empty() -> Self {
+        Self {
+            facts: Vec::new(),
+            matched: 0,
+            truncated: false,
+        }
+    }
+}
+
 /// An entity reached by walking relations, and the relation that got there.
 #[derive(Debug, Clone, Serialize)]
 pub struct Neighbour {
@@ -54,6 +187,9 @@ pub struct Neighbour {
 pub enum BrainError {
     #[error("confidence must be between 0.0 and 1.0, got {0}")]
     InvalidConfidence(f64),
+
+    #[error("a fact cannot stop being true before it starts: from {from}, until {until}")]
+    EmptyInterval { from: Timestamp, until: Timestamp },
 
     #[error("{what} cannot be empty or punctuation-only (got {given:?})")]
     EmptyKey { what: &'static str, given: String },
@@ -150,6 +286,14 @@ impl Brain {
         self.embedder.as_ref()
     }
 
+    /// The instant this brain calls now.
+    ///
+    /// The clock itself stays private: a caller that could swap it mid-life could
+    /// make one brain answer two questions about time.
+    pub(crate) fn now(&self) -> Timestamp {
+        self.clock.now()
+    }
+
     fn conn(&self) -> &Connection {
         self.store.conn()
     }
@@ -173,8 +317,24 @@ impl Brain {
         let now = self.clock.now();
         let valid_from = a.valid_from.unwrap_or(now);
 
+        // Rejected here rather than left to the schema's CHECK, so the caller is
+        // told what is wrong with the claim instead of which constraint tripped.
+        if let Some(until) = a.valid_to
+            && until <= valid_from
+        {
+            return Err(BrainError::EmptyInterval {
+                from: valid_from,
+                until,
+            });
+        }
+
         let entity_id = upsert_entity(&tx, &subject_key, &a.subject, now)?;
-        let shape = upsert_predicate(&tx, &predicate_key, a.cardinality)?;
+        let shape = upsert_predicate(
+            &tx,
+            &predicate_key,
+            a.cardinality,
+            matches!(&a.object, Object::Entity(_)),
+        )?;
         let object = resolve_object(&tx, &a.object, shape.relational, now)?;
         let cardinality = shape.cardinality;
 
@@ -189,7 +349,9 @@ impl Brain {
 
         let outcome = match cardinality {
             Cardinality::Multi => {
-                let id = self.insert_fact(&tx, &w, None, false)?;
+                // Nothing supersedes anything here, so the only end this fact can
+                // have is the one it was given.
+                let id = self.insert_fact(&tx, &w, a.valid_to, false)?;
                 Outcome::Created(load_fact(&tx, id)?)
             }
             Cardinality::Single => self.place_single(&tx, &w)?,
@@ -222,6 +384,35 @@ impl Brain {
                  WHERE id = ?",
                 params![covering.id],
             )?;
+
+            // "Still true, and now true for another hour" is a reinforcement of
+            // the same claim, so a reassertion may push the end back -- which is
+            // what makes a self-expiring fact refreshable instead of having to be
+            // rewritten. It never pulls the end in, and it never moves the start:
+            // shortening on reassert would let a heartbeat quietly kill the thing
+            // it was keeping alive.
+            if let Some(until) = w.a.valid_to {
+                // Capped at whatever starts next, for the same reason a new fact
+                // is: an extension running past the following claim would make two
+                // facts true at once, which is the one thing this timeline exists
+                // to prevent. A fact already closed by its successor therefore
+                // cannot be extended at all, which is correct -- it did end.
+                let end = live
+                    .iter()
+                    .filter(|f| f.valid_from > covering.valid_from)
+                    .map(|f| f.valid_from)
+                    .min()
+                    .map_or(until, |next| until.min(next));
+                if covering.valid_to.is_some_and(|to| to < end) {
+                    tx.execute(
+                        "UPDATE fact SET valid_to = ? WHERE id = ?",
+                        params![micros(end), covering.id],
+                    )?;
+                    // It may have been written already over, in which case the
+                    // index was told so and now has to be told otherwise.
+                    index::mark_open(tx, covering.id)?;
+                }
+            }
             return Ok(Outcome::Reasserted(load_fact(tx, covering.id)?));
         }
 
@@ -261,7 +452,15 @@ impl Brain {
             index::mark_closed(tx, p.id)?;
         }
 
-        let new_id = self.insert_fact(tx, w, successor.as_ref().map(|s| s.valid_from), true)?;
+        // The earlier of what the claim says about itself and where the next claim
+        // begins. `--until` narrows and never widens: a fact cannot outlive the one
+        // that follows it just because its author thought it would.
+        let end = match (w.a.valid_to, successor.as_ref().map(|s| s.valid_from)) {
+            (Some(until), Some(next)) => Some(until.min(next)),
+            (until, None) => until,
+            (None, next) => next,
+        };
+        let new_id = self.insert_fact(tx, w, end, true)?;
 
         // Only link the predecessor if it actually meets the new fact. A
         // predecessor that closed earlier sits before a genuine gap -- extending
@@ -345,7 +544,11 @@ impl Brain {
             tx,
             id,
             &vector,
-            valid_to.is_none(),
+            // A fact that carries its own end is still a candidate until it
+            // reaches it. Reading this as `valid_to.is_none()` would hide every
+            // self-expiring fact from the semantic channel for the whole of its
+            // life -- findable by its words, unfindable by its meaning.
+            valid_to.is_none_or(|to| to > w.now),
             w.a.scope.as_deref(),
             self.embedder.model_id(),
         )?;
@@ -355,7 +558,7 @@ impl Brain {
     /// Rebuilds the derived vector index from the stored embeddings.
     pub fn reindex(&self) -> Result<usize> {
         let tx = self.conn().unchecked_transaction()?;
-        let n = index::rebuild(&tx)?;
+        let n = index::rebuild(&tx, self.clock.now())?;
         tx.commit()?;
         Ok(n)
     }
@@ -439,29 +642,37 @@ impl Brain {
 
     // --- reading -------------------------------------------------------------
 
-    /// The value that currently holds: the open fact.
+    /// The value that holds now.
     ///
-    /// "Current" means the latest state the brain knows, not "valid at this
-    /// instant on the wall clock". Use [`Brain::as_of`] to travel in time. The
-    /// distinction matters for a fact dated in the future: it is the newest thing
-    /// known, but it is not yet true.
+    /// "Now" is the instant the question is asked, so this is exactly
+    /// [`Brain::as_of`] against the clock. It used to mean something subtly
+    /// different -- the latest fact nobody had closed -- and the two readings
+    /// disagree in both directions once a fact can be dated in the future or carry
+    /// its own end: a price announced for next year is the newest thing known and
+    /// is not today's price, and a freeze that lifted on Friday is still the newest
+    /// thing known on Saturday. One meaning of now, or `get` and `as_of(now)`
+    /// answer the same question differently.
     pub fn current(&self, subject: &str, predicate: &str) -> Result<Option<Fact>> {
         Ok(self.current_all(subject, predicate)?.into_iter().next())
     }
 
-    /// Every open fact, for multi-valued predicates.
+    /// Every fact holding now, which is more than one only for a multi-valued
+    /// predicate.
     pub fn current_all(&self, subject: &str, predicate: &str) -> Result<Vec<Fact>> {
         let Some(entity_id) = find_entity(self.conn(), &norm::key(subject))? else {
             return Ok(Vec::new());
         };
+        let now = micros(self.clock.now());
         query_facts(
             self.conn(),
             &format!(
                 "{SELECT_FACT} WHERE f.entity_id = ? AND f.predicate = ?
-                   AND f.valid_to IS NULL AND f.retracted_at IS NULL
+                   AND f.retracted_at IS NULL
+                   AND f.valid_from <= ?
+                   AND (f.valid_to IS NULL OR ? < f.valid_to)
                  ORDER BY f.valid_from, f.id"
             ),
-            params![entity_id, norm::key(predicate)],
+            params![entity_id, norm::key(predicate), now, now],
         )
     }
 
@@ -507,6 +718,79 @@ impl Brain {
         load_fact(self.conn(), id)
     }
 
+    /// Which subjects hold a predicate, and optionally hold it with a given value.
+    ///
+    /// The read every other one here cannot do: it starts from a predicate instead
+    /// of from a name. Everything above resolves a subject through [`find_entity`]
+    /// first, which answers "what is this thing's status" and can never answer
+    /// "which things are open".
+    ///
+    /// Two details are load-bearing:
+    ///
+    /// - **A literal matches on `object_text`, edge or not.** An entity-valued
+    ///   object carries its label in that column too, so a selection keeps working
+    ///   across the moment somebody converts a predicate from strings into real
+    ///   relations. [`crate::kin`] relies on the same property for the same reason.
+    /// - **"Now" is the instant the question is asked**, not "the row nobody has
+    ///   closed yet". A fact dated next week is the newest thing known and is not
+    ///   true today; a list of what holds now must not contain it.
+    pub fn which(&self, q: &WhichQuery) -> Result<WhichAnswer> {
+        let conn = self.conn();
+        let predicate = require_key("predicate", &q.predicate)?;
+
+        // Resolved before the query runs, so a name the brain does not know is an
+        // empty answer rather than a filter that matches everything.
+        let (value_sql, value_bind): (&str, Option<rusqlite::types::Value>) = match &q.value {
+            None => ("", None),
+            Some(Object::Text(s)) => (" AND f.object_text = ?", Some(s.clone().into())),
+            Some(Object::Num { value, .. }) => (" AND f.object_num = ?", Some((*value).into())),
+            Some(Object::Entity(name)) => match find_entity(conn, &norm::key(name))? {
+                Some(id) => (" AND f.object_entity_id = ?", Some(id.into())),
+                None => return Ok(WhichAnswer::empty()),
+            },
+        };
+
+        let filter = TemporalFilter::for_when(q.when, self.clock.now(), q.scope.clone());
+
+        let mut binds: Vec<rusqlite::types::Value> = vec![predicate.into()];
+        binds.extend(value_bind);
+        let temporal_sql = filter.bind(&mut binds);
+        let where_sql = format!(" WHERE f.predicate = ?{value_sql}{temporal_sql}");
+
+        // Counted separately rather than inferred from the rows, because the
+        // whole difference between this and `recall` is being able to say how
+        // much was left out.
+        let matched: i64 = conn.query_row(
+            &format!("SELECT count(*) FROM fact f{where_sql}"),
+            rusqlite::params_from_iter(binds.iter()),
+            |r| r.get(0),
+        )?;
+
+        let dir = if q.desc { " DESC" } else { "" };
+        let order_sql = q
+            .order
+            .keys()
+            .iter()
+            .map(|k| format!("{k}{dir}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        binds.push((q.limit as i64).into());
+        let mut stmt = conn.prepare(&format!(
+            "{SELECT_FACT}{where_sql} ORDER BY {order_sql}, f.id LIMIT ?"
+        ))?;
+        let mut facts = Vec::new();
+        for row in stmt.query_map(rusqlite::params_from_iter(binds), row_to_fact)? {
+            facts.push(row??);
+        }
+
+        Ok(WhichAnswer {
+            truncated: matched > facts.len() as i64,
+            matched,
+            facts,
+        })
+    }
+
     /// What is known about one entity, and what it connects to.
     ///
     /// The neighbourhood is the part worth having: it is the brain's own answer
@@ -522,7 +806,7 @@ impl Brain {
         // up through an alias must report the thing that was found, or the answer
         // describes the question instead of the brain.
         let key = entity_key(conn, id)?;
-        let filter = TemporalFilter::for_when(when, None);
+        let filter = TemporalFilter::for_when(when, self.clock.now(), None);
 
         let mut binds: Vec<rusqlite::types::Value> = vec![id.into()];
         let where_sql = filter.bind(&mut binds);
@@ -763,6 +1047,7 @@ fn upsert_predicate(
     conn: &Connection,
     key: &str,
     declared: Option<Cardinality>,
+    object_names_entity: bool,
 ) -> Result<PredicateShape> {
     let existing: Option<(String, i64, i64)> = conn
         .query_row(
@@ -776,9 +1061,15 @@ fn upsert_predicate(
     let was_declared = matches!(existing, Some((_, 1, _)));
     let stored_relational = existing.as_ref().map(|&(_, _, r)| r != 0);
 
+    // The write in hand counts as evidence, not only the ones before it.
+    // [`is_relational`] looks at stored facts, so on the very first edge under a
+    // predicate it answers "no" and the flag lands wrong -- exactly contradicting
+    // the rule it documents, that one entity-valued fact settles what a predicate
+    // is. It self-corrected on the second write, which meant a predicate with a
+    // single relation read as an attribute in `lint` and in the studio forever.
     let relational = match (was_declared, stored_relational) {
         (true, Some(r)) => r,
-        _ => is_relational(conn, key)?,
+        _ => object_names_entity || is_relational(conn, key)?,
     };
 
     let cardinality = match existing {

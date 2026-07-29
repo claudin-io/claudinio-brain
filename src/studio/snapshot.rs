@@ -73,6 +73,14 @@ pub struct SnapPredicate {
     pub cardinality: String,
     pub declared: bool,
     pub observed_n: i64,
+    /// Whether the object names an entity rather than being a literal.
+    ///
+    /// The more consequential half of what a predicate is, and the half this
+    /// snapshot went without: cardinality decides whether a value supersedes, but
+    /// *this* decides whether the graph can be walked through it at all. A
+    /// relation stored as a string reads back perfectly and no walk can follow it,
+    /// which is precisely the defect the studio exists to make visible.
+    pub relational: bool,
 }
 
 /// One fact, both time axes intact.
@@ -188,14 +196,16 @@ fn entities(conn: &Connection) -> Result<Vec<SnapEntity>> {
 }
 
 fn predicates(conn: &Connection) -> Result<Vec<SnapPredicate>> {
-    let mut stmt =
-        conn.prepare("SELECT key, cardinality, declared, observed_n FROM predicate ORDER BY key")?;
+    let mut stmt = conn.prepare(
+        "SELECT key, cardinality, declared, observed_n, relational FROM predicate ORDER BY key",
+    )?;
     let rows = stmt.query_map([], |r| {
         Ok(SnapPredicate {
             key: r.get(0)?,
             cardinality: r.get(1)?,
             declared: r.get::<_, i64>(2)? != 0,
             observed_n: r.get(3)?,
+            relational: r.get::<_, i64>(4)? != 0,
         })
     })?;
     let mut out = Vec::new();
