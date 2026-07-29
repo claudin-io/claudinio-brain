@@ -74,7 +74,9 @@ anyhow = "1"
 bytemuck = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-uuid = { version = "1", features = ["v7", "serde"] }
+# v4 as well as v7: the studio's session token must be unpredictable, and v7
+# spends half its bits on a timestamp an attacker already knows.
+uuid = { version = "1", features = ["v4", "v7", "serde"] }
 directories = "6"
 toml = "1.1"
 unicode-normalization = "0.1.25"
@@ -88,8 +90,12 @@ predicates = "3"
 safetensors = "0.8.0"
 
 [features]
-default = ["mcp"]
+default = ["mcp", "studio"]
 mcp = ["dep:rmcp", "dep:tokio", "dep:schemars"]
+# The 3D viewer and its localhost editor. No dependencies of its own -- the cost
+# is the vendored three.js compiled into the binary, which is the only reason
+# this is separable at all.
+studio = []
 
 [profile.release]
 opt-level = 3

@@ -49,6 +49,10 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Cmd::Reindex => cmd_reindex(&cli, &ctx),
         #[cfg(feature = "mcp")]
         Cmd::Serve => cmd_serve(&cli, &ctx),
+        #[cfg(feature = "studio")]
+        Cmd::Export(args) => cmd_export(args, &cli, &ctx),
+        #[cfg(feature = "studio")]
+        Cmd::Studio(args) => cmd_studio(args, &cli, &ctx),
         Cmd::Why { fact_id } => cmd_why(*fact_id, &cli, &ctx),
         Cmd::Retract { fact_id, reason } => cmd_retract(*fact_id, reason.as_deref(), &cli, &ctx),
         Cmd::Predicate { name, cardinality } => cmd_predicate(name, *cardinality, &cli, &ctx),
@@ -273,6 +277,71 @@ fn cmd_serve(cli: &Cli, ctx: &Ctx) -> anyhow::Result<()> {
     let b = open(cli, ctx)?;
     tracing::info!(brain = %b.store().label(), "serving MCP over stdio");
     brain::mcp::serve(b)
+}
+
+/// Writes the brain as one HTML file.
+///
+/// A photograph, explicitly: the page carries `live: false`, so it renders the
+/// graph and the whole timeline but shows no editor. Nothing in it can drift out
+/// of date silently, because nothing in it claims to be current.
+#[cfg(feature = "studio")]
+fn cmd_export(args: &brain::cli::ExportArgs, cli: &Cli, ctx: &Ctx) -> anyhow::Result<()> {
+    let b = open(cli, ctx)?;
+    let snap = brain::studio::Snapshot::capture(&b, false)?;
+    let html = brain::studio::render_page(&snap)?;
+
+    if args.stdout {
+        emit(&html);
+        return Ok(());
+    }
+
+    let out = args
+        .out
+        .clone()
+        .unwrap_or_else(|| ctx.cwd.join("brain-studio.html"));
+    std::fs::write(&out, &html)?;
+
+    if cli.json {
+        emit(&serde_json::to_string_pretty(&answer(
+            &b,
+            serde_json::json!({
+                "exported": out,
+                "bytes": html.len(),
+                "entities": snap.entities.len(),
+                "facts": snap.facts.len(),
+            }),
+        ))?);
+    } else {
+        emit(&format!(
+            "exported {} entities and {} facts to {} ({} KB)",
+            snap.entities.len(),
+            snap.facts.len(),
+            out.display(),
+            html.len() / 1024,
+        ));
+    }
+    Ok(())
+}
+
+/// Serves the studio until interrupted.
+#[cfg(feature = "studio")]
+fn cmd_studio(args: &brain::cli::StudioArgs, cli: &Cli, ctx: &Ctx) -> anyhow::Result<()> {
+    let b = open(cli, ctx)?;
+    let label = b.store().label().to_string();
+    let studio = brain::studio::server::Studio::bind(b, args.port)?;
+    let url = studio.url();
+
+    // The URL is a capability -- it carries the token -- so it goes to the
+    // user's own output and nowhere else. Emitted before `run` blocks.
+    emit(&format!("brain studio: {label}"));
+    emit(&format!("  {url}"));
+    emit("  (the token in that URL authorizes edits, and changes on every restart)");
+
+    if !args.no_open {
+        brain::studio::server::open_in_browser(&url);
+    }
+    studio.run()?;
+    Ok(())
 }
 
 fn cmd_reindex(cli: &Cli, ctx: &Ctx) -> anyhow::Result<()> {

@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!--
+  The page is entirely self-contained, and this is what makes that checkable
+  rather than merely claimed: `default-src 'none'` means no font, image, script
+  or stylesheet can be fetched from anywhere, and `connect-src 'self'` leaves
+  exactly one reachable endpoint -- the localhost studio API, which does not
+  exist at all in a static export. A brain is private; a viewer for one has no
+  business being able to talk to the network.
+-->
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; connect-src 'self'; base-uri 'none'; form-action 'none'">
+<title>__BRAIN_TITLE__ · brain studio</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='6' fill='%235ee0d0'/%3E%3Ccircle cx='6' cy='7' r='3' fill='%23f0a860'/%3E%3Ccircle cx='27' cy='9' r='3' fill='%23b98cff'/%3E%3Ccircle cx='24' cy='26' r='3' fill='%234ea3ff'/%3E%3Cg stroke='%23566' stroke-width='1.5'%3E%3Cline x1='16' y1='16' x2='6' y2='7'/%3E%3Cline x1='16' y1='16' x2='27' y2='9'/%3E%3Cline x1='16' y1='16' x2='24' y2='26'/%3E%3C/g%3E%3C/svg%3E">
+<style>__BRAIN_CSS__</style>
+</head>
+<body>
+
+<div id="app">
+
+  <header id="topbar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <div class="brand-text">
+        <strong id="brain-label"></strong>
+        <span id="brain-path" class="mono dim"></span>
+      </div>
+    </div>
+
+    <div id="counts" class="counts"></div>
+
+    <div class="topbar-right">
+      <div id="mode-badge" class="badge">—</div>
+      <button id="btn-help" class="ghost" title="Keyboard and mouse (?)">?</button>
+    </div>
+  </header>
+
+  <aside id="rail">
+    <section class="panel">
+      <h2>Recall</h2>
+      <form id="recall-form" autocomplete="off">
+        <input id="recall-input" type="text" placeholder="ask in your own words…" spellcheck="false">
+      </form>
+      <p id="recall-note" class="note"></p>
+      <ol id="recall-hits" class="hits"></ol>
+    </section>
+
+    <section class="panel">
+      <h2>Channels</h2>
+      <ul id="channel-legend" class="legend"></ul>
+    </section>
+
+    <section class="panel">
+      <h2>Edges</h2>
+      <ul id="edge-legend" class="legend"></ul>
+      <label class="check"><input type="checkbox" id="opt-retracted"> show retracted</label>
+      <label class="check"><input type="checkbox" id="opt-isolated" checked> show unlinked entities</label>
+      <label class="check"><input type="checkbox" id="opt-labels" checked> labels</label>
+    </section>
+
+    <section class="panel grow">
+      <h2>Predicates</h2>
+      <ul id="predicate-list" class="predicates"></ul>
+    </section>
+  </aside>
+
+  <main id="stage">
+    <canvas id="scene"></canvas>
+    <div id="labels" aria-hidden="true"></div>
+    <div id="tooltip" hidden></div>
+    <div id="empty" hidden>
+      <p>This brain has no entities yet.</p>
+      <p class="dim mono">brain remember --subject acme --predicate pais --value Chile</p>
+    </div>
+    <div id="stage-hint" class="hint">
+      drag to orbit · scroll to zoom · click a node · shift-click a second for the path
+    </div>
+  </main>
+
+  <aside id="inspector">
+    <div id="inspector-empty" class="inspector-empty">
+      <p>Nothing selected.</p>
+      <p class="dim">Click a node to see its names, its facts and every relation it takes part in.</p>
+    </div>
+    <div id="inspector-body" hidden></div>
+  </aside>
+
+  <footer id="timeline">
+    <div class="time-head">
+      <div class="time-modes" role="group" aria-label="temporal mode">
+        <button data-mode="now" class="active">now</button>
+        <button data-mode="asof">as of</button>
+        <button data-mode="history">history</button>
+      </div>
+      <div id="time-readout" class="mono"></div>
+      <div class="time-axes">
+        <span class="axis-key"><i class="swatch valid"></i>valid time</span>
+        <span class="axis-key"><i class="swatch tx"></i>transaction time</span>
+      </div>
+    </div>
+    <div id="scrub-wrap">
+      <canvas id="scrub"></canvas>
+    </div>
+    <div id="plane-wrap">
+      <canvas id="plane"></canvas>
+      <div class="plane-caption">
+        <span>bitemporal plane</span>
+        <span id="plane-range" class="dim"></span>
+      </div>
+    </div>
+  </footer>
+
+  <div id="help" hidden>
+    <div class="help-card">
+      <h2>brain studio</h2>
+      <dl>
+        <dt>click</dt><dd>select a node — its neighbourhood lights, the rest recedes</dd>
+        <dt>shift-click</dt><dd>select a second node and draw the shortest path between them</dd>
+        <dt>double-click</dt><dd>fly the camera to a node</dd>
+        <dt>drag / scroll</dt><dd>orbit and zoom</dd>
+        <dt>esc</dt><dd>clear the selection</dd>
+        <dt>/</dt><dd>focus the recall box</dd>
+        <dt>f</dt><dd>fit the whole graph back in frame</dd>
+        <dt>1 2 3</dt><dd>now · as of · history</dd>
+        <dt>drag the plane</dt><dd>x sets the instant asked about, y sets how much
+        of the brain's own history has been told — drag it down to see what was
+        believed before a correction landed</dd>
+      </dl>
+      <h3>Reading the graph</h3>
+      <p>A node is an entity. An edge is a fact whose object is another entity — so
+      an edge is bitemporal too, and one that <em>ended</em> is drawn as a dashed
+      ghost rather than deleted. A fact that was <em>retracted</em> was never true,
+      so it is hidden unless you ask for it, and struck through when shown.</p>
+      <p><strong>now</strong> is the open fact, which is not the same as “true at this
+      instant”: a fact dated in the future is open but not yet true, and the studio
+      rings it in violet so the difference is visible.</p>
+      <button id="help-close">close</button>
+    </div>
+  </div>
+
+</div>
+
+<script id="brain-snapshot" type="application/json">__BRAIN_SNAPSHOT__</script>
+<script>__BRAIN_THREE__</script>
+<script>__BRAIN_APP__</script>
+</body>
+</html>

@@ -135,8 +135,13 @@ src/
   norm.rs         text -> identity key. The whole deduplication story
   locate.rs       which brain an invocation means, and why
   mcp.rs          the MCP tool surface; a shell over the same library the CLI uses
+  studio/         the 3D viewer: snapshot.rs is the data contract, server.rs the
+                  localhost editor, assets/ the page. studio.js mirrors the
+                  temporal predicates in recall.rs -- change one, change both
   cli.rs main.rs  the command surface
 evals/            quality suites and the committed baseline
+examples/demo.sh  a brain with one of each thing worth looking at
+tools/            vendoring three.js; needs node, and only when it is run
 docs/stack-notes.md   findings that cost time to rediscover
 ```
 

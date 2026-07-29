@@ -1,4 +1,6 @@
 /target
+# Where examples/demo.sh lands by default, exported HTML included.
+/demo/
 *.db
 *.db-wal
 *.db-shm
