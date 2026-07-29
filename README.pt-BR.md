@@ -256,11 +256,88 @@ retract    Marca um fato como nunca tendo sido verdade
 alias      Dá outro nome a uma entidade, lista os nomes, ou remove um
 reindex    Reconstrói o índice vetorial a partir dos embeddings guardados
 predicate  Corrige a cardinalidade de um predicado
+studio     Abre o brain num visualizador e editor 3D, servido do localhost
+export     Escreve o brain num único arquivo HTML autocontido
 ```
 
 Todo comando aceita `--json`, e toda resposta JSON é carimbada com o brain que a
 produziu. `--brain <caminho>`, `--use <nome>` e `--global` escolhem com qual
 brain falar.
+
+## O studio
+
+Um grafo sobre duas linhas do tempo não se lê bem como lista. O `brain studio`
+abre um deles no navegador, em 3D, servido do localhost:
+
+![O studio: o grafo 3D do brain de uma torrefação, o trace do recall mostrando
+qual dos quatro canais achou cada resultado, o inspetor com os fatos e os nomes
+de um fornecedor, e o plano bitemporal embaixo](docs/studio.png)
+
+```bash
+brain studio        # editor ao vivo em 127.0.0.1; as escritas vão pro arquivo
+brain export        # a mesma página num HTML só, somente leitura, offline
+```
+
+Um nó é uma entidade. Uma aresta é um fato cujo objeto é outra entidade — então
+arestas carregam os dois eixos de tempo, como tudo aqui. Uma aresta que
+**terminou** é desenhada como um fantasma tracejado em vez de apagada, e uma que
+foi **retratada** fica escondida até você pedir, porque ela nunca foi verdade.
+
+Quatro partes fazem o trabalho:
+
+**A régua de valid time.** Arraste e o grafo se remonta no que era verdade
+naquele instante; relações aparecem e somem sob o cursor. É o `--as-of` virando
+gesto, e os predicados por trás espelham o `TemporalFilter` de `src/recall.rs`
+exatamente. Um debugger que filtra tempo nem que seja um pouquinho diferente da
+coisa que ele depura inventa divergências e esconde as de verdade.
+
+**O plano bitemporal.** x é quando o fato foi verdade; y é quando o brain foi
+avisado. Arraste o cursor horizontal para baixo e o conhecimento do próprio
+brain rebobina — no que ele acreditava *antes* da correção chegar? Nada extra é
+guardado para isso funcionar: o fechamento de um fato foi aprendido quando o
+fato que o fechou foi registrado, e `superseded_by` é o ponteiro para ele. Esse
+também é o único lugar onde os três desfechos de escrita parecem três coisas
+diferentes. Uma supersessão é uma barra que para e outra começando mais acima.
+Uma correção é uma barra riscada sem nada tomando o lugar dela. Uma reafirmação
+é uma barra que engrossou em vez de uma segunda barra aparecendo.
+
+**O trace do recall.** Faça uma pergunta e os quatro canais colorem os nós que
+surfaram, com os canais e o score fundido ao lado de cada resultado. Um fato em
+que vários canais concordam sai na média das cores deles — que é exatamente a
+concordância que o RRF premia, visível. Na imagem acima, "de que pais vem o
+bourbon amarelo" é respondida por `Fazenda Serra Azul pais Brasil`, e a etiqueta
+`graph` nele é a caminhada que chegou lá: o país está a um pulo da entidade que
+a pergunta nomeou.
+
+**O editor.** Só no `brain studio`. Registrar um valor não sobrescreve o antigo,
+e você vê o intervalo fechar enquanto outro abre — o modelo se ensina sozinho.
+Toda escrita reporta qual dos quatro desfechos foi, decidido no núcleo e não
+adivinhado no navegador.
+
+### Experimente
+
+```bash
+sh examples/demo.sh              # um brain com um preço superado duas vezes e um
+                                 # quarto valor datado no futuro, um fornecedor
+                                 # que mudou, um fato que nunca foi verdade, e um
+                                 # alias declarado ao lado de um aprendido
+brain --brain demo/brain.db studio
+```
+
+### Quanto custa
+
+O three.js é vendorizado no repositório e compilado dentro do binário, então uma
+página exportada abre por `file://` sem servidor, sem CDN e sem rede — a mesma
+promessa que o binário faz. O `tools/vendor-three.sh` regenera ele e precisa de
+node só quando roda, nunca para compilar ou usar o `brain`. Compilar com
+`--no-default-features --features mcp` deixa o studio de fora inteiro.
+
+A página declara `default-src 'none'`, então o navegador *impõe* que ela não
+busca nada, em vez de você ter que acreditar. O servidor escuta só no loopback, e
+uma escrita precisa de um token em `X-Brain-Token` — que não é um header
+CORS-safelisted, então uma página em outra aba não consegue mandar — e de um
+`Host` que seja literalmente loopback, que é o que impede o DNS rebinding de
+fazer o token viajar de graça.
 
 ## MCP
 
@@ -328,10 +405,10 @@ Pré-1.0. O formato em disco ainda não é estável e não há caminho de migra�
 entre versões de schema.
 
 Construído e funcionando: o store selado e a escada de resolução, o modelo
-bitemporal de fatos, os quatro canais de recall, nomes declarados e aprendidos, e
-o servidor MCP. Três superfícies — o CLI, o servidor MCP e a biblioteca Rust —
-todas sobre um núcleo só, então o que um agente vê é exatamente o que o
-`brain recall` te mostra.
+bitemporal de fatos, os quatro canais de recall, nomes declarados e aprendidos, o
+servidor MCP e o studio. Quatro superfícies — o CLI, o servidor MCP, o studio e a
+biblioteca Rust — todas sobre um núcleo só, então o que um agente vê é exatamente
+o que o `brain recall` te mostra e exatamente o que o grafo desenha.
 
 ## Contribuindo
 

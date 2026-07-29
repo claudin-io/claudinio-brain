@@ -251,11 +251,86 @@ retract    Mark a fact as never having been true
 alias      Give an entity another name, list the names it has, or take one away
 reindex    Rebuild the vector index from the stored embeddings
 predicate  Fix a predicate's cardinality
+studio     Open the brain in a 3D viewer and editor, served from localhost
+export     Write the brain to a single self-contained HTML file
 ```
 
 Every command takes `--json`, and every JSON answer is stamped with the brain
 that produced it. `--brain <path>`, `--use <name>` and `--global` select which
 brain to talk to.
+
+## The studio
+
+A graph on two timelines does not read well as a list. `brain studio` opens one
+in a browser, in 3D, served from localhost:
+
+![The studio: a 3D graph of a coffee roaster's brain, a recall trace showing
+which of the four channels found each hit, an inspector listing one supplier's
+facts and names, and the bitemporal plane along the bottom](docs/studio.png)
+
+```bash
+brain studio        # a live editor on 127.0.0.1; writes go to the brain file
+brain export        # the same page as one HTML file, read-only, works offline
+```
+
+A node is an entity. An edge is a fact whose object is another entity — so edges
+carry both time axes like everything else does. An edge that **ended** is drawn
+as a dashed ghost rather than deleted, and one that was **retracted** is hidden
+unless you ask, because it was never true.
+
+Four parts do the work:
+
+**The valid-time ruler.** Drag it and the graph re-forms into whatever was true
+at that instant; relations appear and vanish under the cursor. It is `--as-of` as
+a gesture, and the predicates behind it mirror `TemporalFilter` in
+`src/recall.rs` exactly. A debugger that filters time even slightly differently
+from the thing it is debugging invents disagreements and hides real ones.
+
+**The bitemporal plane.** x is when a fact was true; y is when the brain was
+told. Drag the horizontal cursor down and the brain's own knowledge rewinds —
+what did it believe *before* the correction landed? Nothing extra is stored to
+make that work: a fact's closure was learned when the fact that closed it was
+recorded, and `superseded_by` is the pointer to it. This is also the only view
+where the three write outcomes look like three different things. A supersession
+is a bar that stops and another starting higher up. A correction is a struck bar
+with nothing taking its place. A reassertion is one bar that got thicker instead
+of a second bar appearing.
+
+**The recall trace.** Ask a question and the four channels colour the nodes they
+surfaced, with each hit's channels and fused score beside it. A fact several
+channels agree on is drawn in their average — which is the agreement RRF rewards,
+made visible. In the screenshot above, "de que pais vem o bourbon amarelo" is
+answered by `Fazenda Serra Azul pais Brasil`, and the `graph` chip on it is the
+walk that got there: the country is one hop past the entity the question named.
+
+**The editor.** In `brain studio` only. Recording a value does not overwrite the
+old one and you watch the interval close as a new one opens, so the model teaches
+itself. Every write reports which of the four outcomes it was, decided in the
+core rather than guessed at in the browser.
+
+### Try it
+
+```bash
+sh examples/demo.sh              # a brain with a price superseded twice and a
+                                 # fourth value dated in the future, a supplier
+                                 # that changed, a fact that was never true, and
+                                 # a declared alias next to a learned one
+brain --brain demo/brain.db studio
+```
+
+### What it costs
+
+three.js is vendored into the repository and compiled into the binary, so an
+exported page opens from `file://` with no server, no CDN and no network — the
+same promise the binary makes. `tools/vendor-three.sh` regenerates it and needs
+node only when it is run, never to build or use `brain`. Building with
+`--no-default-features --features mcp` leaves the studio out entirely.
+
+The page declares `default-src 'none'`, so the browser *enforces* that it fetches
+nothing rather than taking it on trust. The server binds loopback only, and a
+write needs both a token in `X-Brain-Token` — not a CORS-safelisted header, so a
+page in another tab cannot send one — and a `Host` that is literally loopback,
+which is what stops DNS rebinding from making the token travel for free.
 
 ## MCP
 
@@ -323,9 +398,10 @@ Pre-1.0. The on-disk format is not yet stable and there is no migration path
 between schema versions.
 
 Built and working: the sealed store and resolution ladder, the bitemporal fact
-model, all four retrieval channels, declared plus learned names, and the MCP
-server. Three surfaces — the CLI, the MCP server, and the Rust library — all
-over one core, so what an agent sees is exactly what `brain recall` shows you.
+model, all four retrieval channels, declared plus learned names, the MCP server,
+and the studio. Four surfaces — the CLI, the MCP server, the studio and the Rust
+library — all over one core, so what an agent sees is exactly what `brain recall`
+shows you and exactly what the graph draws.
 
 ## Contributing
 

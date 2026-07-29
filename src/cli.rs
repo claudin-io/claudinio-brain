@@ -100,6 +100,14 @@ pub enum Cmd {
     #[cfg(feature = "mcp")]
     Serve,
 
+    /// Write the brain to a single self-contained HTML file.
+    #[cfg(feature = "studio")]
+    Export(ExportArgs),
+
+    /// Open the brain in a 3D viewer and editor, served from localhost.
+    #[cfg(feature = "studio")]
+    Studio(StudioArgs),
+
     /// Fix a predicate's cardinality.
     Predicate {
         name: String,
@@ -211,6 +219,31 @@ pub struct EntityArgs {
     /// Show the neighbourhood as it stood at this instant.
     #[arg(long, value_name = "WHEN")]
     pub as_of: Option<String>,
+}
+
+#[derive(Args, Debug)]
+#[cfg(feature = "studio")]
+pub struct ExportArgs {
+    /// Where to write it. Defaults to `brain-studio.html` in the working
+    /// directory.
+    #[arg(long, short, value_name = "PATH")]
+    pub out: Option<PathBuf>,
+
+    /// Write to stdout instead of a file.
+    #[arg(long, conflicts_with = "out")]
+    pub stdout: bool,
+}
+
+#[derive(Args, Debug)]
+#[cfg(feature = "studio")]
+pub struct StudioArgs {
+    /// Port to listen on. 0 asks the OS for a free one.
+    #[arg(long, default_value_t = 0)]
+    pub port: u16,
+
+    /// Do not try to open a browser.
+    #[arg(long)]
+    pub no_open: bool,
 }
 
 #[derive(Args, Debug)]
