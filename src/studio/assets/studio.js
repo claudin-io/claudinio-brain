@@ -131,6 +131,7 @@
     selectedFact: null,
     hits: [],
     hitChannels: new Map(),      // entity id -> Set(channel)
+    which: null,                 // predicate whose whole set is selected
   };
 
   // --- temporal predicates ---------------------------------------------------
@@ -154,43 +155,61 @@
 
   /* Mirrors TemporalFilter::for_when in src/recall.rs.
    *
-   *   Now      -> retracted_at IS NULL AND valid_to IS NULL
-   *   AsOf(t)  -> retracted_at IS NULL AND valid_from <= t AND (valid_to IS NULL OR t < valid_to)
+   *   Now      -> retracted_at IS NULL AND valid_from <= now AND (valid_to IS NULL OR now < valid_to)
+   *   AsOf(t)  -> the same, against t
    *   History  -> retracted_at IS NULL
    *
-   * The one deliberate divergence is `showRetracted`: recall hides retractions in
-   * every mode because replaying one would state something that was never true.
-   * A debugger has to be able to look at them, so the toggle exists -- off by
-   * default, and struck through when on. */
+   * Two deliberate divergences, both because a debugger has to be able to see
+   * what a retriever is right to hide:
+   *
+   * - `showRetracted`. Recall hides retractions in every mode, since replaying
+   *   one would state something that was never true. Off by default here, and
+   *   struck through when on.
+   * - A fact dated in the future stays in the `now` view, ringed in violet. The
+   *   core excludes it -- it is not true yet -- but "what is scheduled" is a
+   *   question you ask a memory while looking at it, and the alternative is a
+   *   fact that exists and appears nowhere until its day comes. */
   function visible(f) {
     const k = asKnownAt(f, state.knownAt);
     if (k === null) return null;
     if (k.retracted && !state.showRetracted) return null;
 
     let ok;
-    if (state.mode === 'now') ok = k.to == null;
+    // Not "has no valid_to" but "has not ended": a fact can carry its own end
+    // now, so `valid_to` set no longer means something replaced it.
+    if (state.mode === 'now') ok = k.to == null || NOW < k.to;
     else if (state.mode === 'asof') ok = f._from <= state.asOf && (k.to == null || state.asOf < k.to);
     else ok = true;
     if (!ok) return null;
 
+    const at = state.mode === 'asof' ? state.asOf : NOW;
     return {
       fact: f,
       to: k.to,
       retracted: k.retracted,
-      // Open but not yet true. `now` means "the open fact", not "true at this
-      // instant" -- see Brain::current. The distinction is invisible in the CLI
-      // and it bites, so the studio draws it.
-      future: !k.retracted && f._from > NOW,
+      // Open but not yet true.
+      future: !k.retracted && f._from > at,
+      // True, with an end already on it. Nothing has to happen for this to stop
+      // being the answer, which is the one fact state that changes on its own.
+      expiring: !k.retracted && k.to != null && at < k.to,
       closed: k.to != null,
     };
   }
 
+  /* The precedence matters. An expiring fact is `closed` too -- it has a
+   * `valid_to` -- and drawing it as a ghost would say it had already ended. A
+   * scheduled window is both future and expiring, and not-yet-true is the more
+   * useful thing to know about it. */
   function factState(v) {
     if (v.retracted) return 'retracted';
-    if (v.closed) return 'closed';
     if (v.future) return 'future';
+    if (v.expiring) return 'expiring';
+    if (v.closed) return 'closed';
     return 'open';
   }
+
+  /* Whether a fact is in force, for anything that draws ended things faintly. */
+  const isLive = (st) => st === 'open' || st === 'future' || st === 'expiring';
 
   // --- visible graph ---------------------------------------------------------
 
@@ -412,13 +431,16 @@
     closed: cssColor('--closed'),
     retracted: cssColor('--retracted'),
     future: cssColor('--future'),
+    expiring: cssColor('--expiring'),
     bm25: cssColor('--ch-bm25'),
     alias: cssColor('--ch-alias'),
     semantic: cssColor('--ch-semantic'),
     graph: cssColor('--ch-graph'),
-    // Not a channel. A static export has no retriever behind it, and colouring
-    // a substring match in a channel's colour would claim it was one.
+    // Neither of these is a channel. A static export has no retriever behind it,
+    // and a set query does not rank -- colouring either in a channel's hue would
+    // claim a retriever ran.
     match: cssColor('--text'),
+    set: cssColor('--ch-set'),
   };
 
   // Muted, evenly spaced hues. A group is free-form text, so the palette is a
@@ -728,7 +750,7 @@
         // Each sample segment is drawn at 55% length when the edge is closed,
         // which turns the same buffer into a dashed ghost with no second object
         // and no `computeLineDistances`.
-        const shrink = e.state === 'open' || e.state === 'future' ? 1 : 0.55;
+        const shrink = isLive(e.state) ? 1 : 0.55;
         for (let s = 0; s < SEGMENTS; s++) {
           const t0 = s / SEGMENTS, t1 = (s + 1) / SEGMENTS;
           const gap = (t1 - t0) * (1 - shrink) * 0.5;
@@ -1019,8 +1041,9 @@
   function intervalText(f, v) {
     const from = fmtDate(f._from);
     if (v.retracted) return `${from} · retracted ${fmtDate(f._ret)} — never true`;
+    if (v.future) return `${from} → ${v.to == null ? 'open' : fmtDate(v.to)} (not yet true)`;
+    if (v.expiring) return `${from} → ${fmtDate(v.to)} (expires on its own)`;
     if (v.to != null) return `${from} → ${fmtDate(v.to)}`;
-    if (v.future) return `${from} → open (not yet true)`;
     return `${from} → now`;
   }
 
@@ -1223,17 +1246,27 @@
     }
     const at = document.createElement('input');
     at.placeholder = 'valid from (YYYY-MM-DD)';
+    const until = document.createElement('input');
+    until.placeholder = 'until (optional)';
+    until.title = 'When it stops being true. The fact closes itself then, with nobody having to come back for it.';
     const submit = el('button', null, 'record');
     submit.type = 'submit';
-    row2.append(kind, at, submit);
+    row2.append(kind, at, until, submit);
 
     form.append(row1, row2);
     form.addEventListener('submit', (e) => {
       e.preventDefault();
       if (!pred.value.trim() || !value.value.trim()) return;
-      const payload = { subject: ent.key, predicate: pred.value.trim(), at: at.value.trim() || null };
+      const payload = {
+        subject: ent.key,
+        predicate: pred.value.trim(),
+        at: at.value.trim() || null,
+        until: until.value.trim() || null,
+      };
       payload[kind.value === 'entity' ? 'entity' : 'value'] = value.value.trim();
-      post('/api/remember', payload).then(() => { pred.value = ''; value.value = ''; at.value = ''; });
+      post('/api/remember', payload).then(() => {
+        pred.value = ''; value.value = ''; at.value = ''; until.value = '';
+      });
     });
     box.append(form);
 
@@ -1335,6 +1368,10 @@
     const list = $('recall-hits');
     list.innerHTML = '';
     state.hitChannels = new Map();
+    // Asking a question puts the set query away. Showing a ranking and a complete
+    // set in the same list would make the one property that separates them -- that
+    // the set is all of it -- unreadable.
+    if (state.which != null) { state.which = null; renderPredicates(); }
     if (!query) { scene3d.paint(); return; }
 
     if (!LIVE) {
@@ -1422,7 +1459,7 @@
 
   function updateReadout() {
     const parts = [];
-    if (state.mode === 'now') parts.push('open facts');
+    if (state.mode === 'now') parts.push('true now');
     else if (state.mode === 'asof') parts.push('valid ' + new Date(state.asOf).toISOString().slice(0, 10));
     else parts.push('whole trajectory');
     if (state.knownAt < TX.hi - 1) {
@@ -1482,7 +1519,9 @@
       if (k === null) return;
       const x0 = xOf(f._from, w, pad);
       const x1 = xOf(k.to == null ? DOMAIN.hi : k.to, w, pad);
-      const st = k.retracted ? 'retracted' : k.to != null ? 'closed' : f._from > NOW ? 'future' : 'open';
+      const st = factState({ retracted: k.retracted, to: k.to, closed: k.to != null,
+                             future: !k.retracted && f._from > NOW,
+                             expiring: !k.retracted && k.to != null && NOW < k.to });
       ctx.strokeStyle = COLORS[st];
       ctx.globalAlpha = st === 'closed' ? 0.5 : st === 'retracted' ? 0.75 : 0.9;
       ctx.lineWidth = Math.max(1.5, lane - 2.5);
@@ -1558,7 +1597,9 @@
       const y = yOf(f._rec);
       const x0 = xOf(f._from, w, pad);
       const x1 = xOf(f._to == null ? DOMAIN.hi : f._to, w, pad);
-      const st = f._ret != null ? 'retracted' : f._to != null ? 'closed' : f._from > NOW ? 'future' : 'open';
+      const st = factState({ retracted: f._ret != null, to: f._to, closed: f._to != null,
+                             future: f._ret == null && f._from > NOW,
+                             expiring: f._ret == null && f._to != null && NOW < f._to });
       ctx.strokeStyle = COLORS[st];
       ctx.globalAlpha = f._rec > state.knownAt ? 0.13 : st === 'closed' ? 0.55 : 0.9;
       ctx.lineWidth = Math.min(6, 1.5 + f.reassert_count * 1.2);
@@ -1640,12 +1681,76 @@
     for (const f of SNAP.facts) counts.set(f.predicate, (counts.get(f.predicate) || 0) + 1);
     for (const p of SNAP.predicates) {
       const li = document.createElement('li');
+      if (state.which === p.key) li.classList.add('sel');
       li.append(el('span', null, p.key));
+
       const card = el('span', `card ${p.cardinality}`, p.cardinality === 'single' ? '1' : 'n');
       card.title = p.declared ? 'declared by hand' : 'observed';
-      li.append(card, el('span', 'n', String(counts.get(p.key) || 0)));
+      li.append(card);
+
+      // Whether the object names a thing. The snapshot has carried the
+      // cardinality since there was a snapshot and never this, which is the more
+      // consequential half: a relation stored as a string reads back perfectly
+      // and no walk can follow it, and that is the defect this whole viewer was
+      // built to make visible.
+      if (p.relational) {
+        const rel = el('span', 'card rel', '→');
+        rel.title = 'relational — the object names an entity, so the graph can be walked through it';
+        li.append(rel);
+      }
+
+      li.append(el('span', 'n', String(counts.get(p.key) || 0)));
+      li.tabIndex = 0;
+      li.title = `which ${p.key} — every subject holding it`;
+      li.addEventListener('click', () => runWhich(p.key));
+      li.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); runWhich(p.key); }
+      });
       list.append(li);
     }
+  }
+
+  /* `brain which <predicate>`, in the viewer.
+   *
+   * The one question the graph cannot be read for. A node shows what it holds, and
+   * nothing shows which nodes hold a given thing -- so "what is open", "who owns
+   * something", "what has no source" were invisible here for the same reason they
+   * were unaskable at the CLI. Clicking a predicate answers it.
+   *
+   * Distinct from recall on purpose: recall ranks and truncates, and cannot say
+   * what it left out. This is the whole set, at the cursor, and the count is the
+   * count. */
+  function runWhich(predicate) {
+    state.which = state.which === predicate ? null : predicate;
+    state.hitChannels = new Map();
+    const list = $('recall-hits');
+    list.innerHTML = '';
+
+    if (state.which == null) {
+      $('recall-note').textContent = '';
+      renderPredicates();
+      scene3d.paint();
+      return;
+    }
+
+    const found = [];
+    for (const f of SNAP.facts) {
+      if (f.predicate !== predicate) continue;
+      if (!visible(f)) continue;
+      found.push(f);
+      state.hitChannels.set(f.entity_id, new Set(['set']));
+    }
+    // By subject, so the list reads as a list of things rather than of rows.
+    found.sort((a, b) => (a.entity_key < b.entity_key ? -1 : a.entity_key > b.entity_key ? 1 : a.id - b.id));
+
+    for (const f of found) list.append(hitRow(f, null, ['set']));
+    const subjects = new Set(found.map((f) => f.entity_id)).size;
+    $('recall-note').textContent = found.length
+      ? `which ${predicate} — ${subjects} subject${subjects === 1 ? '' : 's'}, all of them`
+      : `which ${predicate} — nothing holds it at this instant`;
+
+    renderPredicates();
+    scene3d.paint();
   }
 
   // The panel that explains the loose dots.
@@ -1721,6 +1826,7 @@
     const edges = [
       ['open', 'still true'],
       ['closed', 'ended — drawn dashed'],
+      ['expiring', 'true now, ends on its own'],
       ['future', 'open, not yet true'],
       ['retracted', 'never true'],
     ];

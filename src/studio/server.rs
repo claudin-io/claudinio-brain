@@ -170,34 +170,25 @@ impl Studio {
         let subject = string_field(&b, "subject")?;
         let predicate = string_field(&b, "predicate")?;
 
+        let unit = b.get("unit").and_then(Value::as_str);
         let object = match (b.get("entity").and_then(Value::as_str), b.get("value")) {
             (Some(e), _) => Object::entity(e),
-            (None, Some(Value::Number(n))) => {
-                let o = Object::num(n.as_f64().unwrap_or_default());
-                match b.get("unit").and_then(Value::as_str) {
-                    Some(u) => o.with_unit(u),
-                    None => o,
-                }
-            }
+            (None, Some(Value::Number(n))) => Object::num(n.as_f64().unwrap_or_default()),
             // The CLI reads a bare `--value 10` as the number ten; the studio's
-            // form posts strings, so it has to make the same call here or the
-            // same input would land as text from one surface and a number from
-            // the other.
-            (None, Some(Value::String(s))) => match s.parse::<f64>() {
-                Ok(n) => {
-                    let o = Object::num(n);
-                    match b.get("unit").and_then(Value::as_str) {
-                        Some(u) => o.with_unit(u),
-                        None => o,
-                    }
-                }
-                Err(_) => Object::text(s.clone()),
-            },
+            // form posts strings, so it goes through the same parser rather than a
+            // second one that agrees today -- otherwise the same input lands as a
+            // number from one surface and as text from the other.
+            (None, Some(Value::String(s))) => Object::parse_literal(s),
             _ => return Err("pass `value` or `entity`".into()),
+        };
+        let object = match unit {
+            Some(u) => object.with_unit(u),
+            None => object,
         };
 
         let mut a = Assertion::new(subject, predicate, object);
         a.valid_from = when_field(&b, "at")?;
+        a.valid_to = when_field(&b, "until")?;
         a.source = b.get("source").and_then(Value::as_str).map(str::to_string);
         a.scope = b.get("scope").and_then(Value::as_str).map(str::to_string);
         a.confidence = b.get("confidence").and_then(Value::as_f64);

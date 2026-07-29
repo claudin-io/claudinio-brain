@@ -130,6 +130,28 @@ fn snapshot_carries_both_alias_kinds() {
     );
 }
 
+#[test]
+fn snapshot_says_which_predicates_are_relational() {
+    // The half of a predicate's shape the snapshot used to leave out. Cardinality
+    // decides whether a value supersedes; this decides whether the graph can be
+    // walked through it at all -- and a relation written as a string is the exact
+    // defect the studio was built to make visible, so the page has to be told.
+    let (_tmp, b) = fixture();
+    remember(&b, "acme", "pais", "Chile", "2026-01-01");
+    b.link("produto_a", "fornecido_por", "acme", None).unwrap();
+
+    let snap = Snapshot::capture(&b, false).unwrap();
+    let by = |k: &str| {
+        snap.predicates
+            .iter()
+            .find(|p| p.key == k)
+            .unwrap_or_else(|| panic!("no predicate {k}"))
+            .relational
+    };
+    assert!(by("fornecido_por"), "an edge's predicate reads as a relation");
+    assert!(!by("pais"), "a literal's predicate does not");
+}
+
 /// A fact is user data, and user data ends up inside a `<script>` element. A
 /// value containing `</script>` must not be able to close it.
 #[test]

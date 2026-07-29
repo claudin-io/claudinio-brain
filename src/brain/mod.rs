@@ -327,7 +327,12 @@ impl Brain {
         }
 
         let entity_id = upsert_entity(&tx, &subject_key, &a.subject, now)?;
-        let shape = upsert_predicate(&tx, &predicate_key, a.cardinality)?;
+        let shape = upsert_predicate(
+            &tx,
+            &predicate_key,
+            a.cardinality,
+            matches!(&a.object, Object::Entity(_)),
+        )?;
         let object = resolve_object(&tx, &a.object, shape.relational, now)?;
         let cardinality = shape.cardinality;
 
@@ -1040,6 +1045,7 @@ fn upsert_predicate(
     conn: &Connection,
     key: &str,
     declared: Option<Cardinality>,
+    object_names_entity: bool,
 ) -> Result<PredicateShape> {
     let existing: Option<(String, i64, i64)> = conn
         .query_row(
@@ -1053,9 +1059,15 @@ fn upsert_predicate(
     let was_declared = matches!(existing, Some((_, 1, _)));
     let stored_relational = existing.as_ref().map(|&(_, _, r)| r != 0);
 
+    // The write in hand counts as evidence, not only the ones before it.
+    // [`is_relational`] looks at stored facts, so on the very first edge under a
+    // predicate it answers "no" and the flag lands wrong -- exactly contradicting
+    // the rule it documents, that one entity-valued fact settles what a predicate
+    // is. It self-corrected on the second write, which meant a predicate with a
+    // single relation read as an attribute in `lint` and in the studio forever.
     let relational = match (was_declared, stored_relational) {
         (true, Some(r)) => r,
-        _ => is_relational(conn, key)?,
+        _ => object_names_entity || is_relational(conn, key)?,
     };
 
     let cardinality = match existing {
