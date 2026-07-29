@@ -267,6 +267,15 @@ const UNASKED_PREDICATE_DEMOTION: f64 = 0.5;
 /// suites: every value keeps a nonsense query empty, but anything above 0.20
 /// costs graph Recall@10 (1.000 at 0.20, 0.875 at 0.35) by cutting off the
 /// one-hop answers that sit furthest out. Any change here must be re-measured.
+///
+/// One thing this floor does *not* catch, learned the hard way in Passo 8: text
+/// the embedder knows no token of. That comes back as a zero vector, and the
+/// cosine recovered for it is not a cosine at all but an artifact of inverting a
+/// unit-length relation on a vector that has no length -- a constant 0.5, over
+/// any floor worth setting. A query of three control characters therefore
+/// returned ten confident hits while this constant was working exactly as
+/// specified. The guard for that lives in [`Brain::semantic_channel`], because it
+/// is a different failure: not "too far away" but "no direction to be far in".
 const MIN_SEMANTIC_COSINE: f32 = 0.20;
 
 impl Brain {
