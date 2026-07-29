@@ -438,6 +438,18 @@
     controls.enableDamping = true;
     controls.dampingFactor = 0.08;
     controls.rotateSpeed = 0.7;
+    /* Zoom goes where the pointer is, not where the orbit target happens to be.
+     *
+     * Dollying toward a fixed target is unusable on a graph of any size, because
+     * the thing worth looking at is almost never the exact centre of the cloud.
+     * Measured on a 683-entity brain: aiming at a node 141 units off-centre and
+     * scrolling in twenty-five notches moved the camera 4.7x closer to the
+     * target and left the distance from the target to that node at exactly
+     * 141.56 -- unchanged, because nothing about scrolling could change it. You
+     * rush past what you were pointing at and end up among edges you cannot
+     * place. This makes the target follow the cursor, so zoom lands where you
+     * are looking and `f` remains the way back out. */
+    controls.zoomToCursor = true;
 
     /* Everything that has to know how big the graph got.
      *
@@ -474,7 +486,9 @@
     function applyScale(r) {
       extent = r;
       const fit = fitDistance(r);
-      controls.minDistance = Math.max(1.5, r * 0.02);
+      // Low enough to get inside a cluster and read it. With zoom following the
+      // cursor there is somewhere worth being that close to.
+      controls.minDistance = Math.max(0.6, r * 0.008);
       controls.maxDistance = fit * ZOOM_OUT;
       camera.far = (controls.maxDistance + r) * 1.6;
       camera.near = Math.max(0.1, camera.far / 4e4);
