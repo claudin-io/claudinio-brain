@@ -2,7 +2,7 @@
 // mode, to the JSON-RPC transport). Diagnostics go to stderr.
 #![deny(clippy::print_stdout, clippy::dbg_macro)]
 
-use brain::brain::{Assertion, Brain, Object};
+use brain::brain::{Assertion, Brain, Object, WhichQuery};
 use brain::cli::{
     AliasArgs, Cli, Cmd, EntityArgs, GetArgs, InitArgs, LinkArgs, RecallArgs, RememberArgs,
     parse_when,
@@ -53,6 +53,7 @@ fn run(cli: Cli) -> anyhow::Result<std::process::ExitCode> {
         Cmd::Link(args) => cmd_link(args, &cli, &ctx),
         Cmd::Get(args) => cmd_get(args, &cli, &ctx),
         Cmd::Recall(args) => cmd_recall(args, &cli, &ctx),
+        Cmd::Which(args) => cmd_which(args, &cli, &ctx),
         Cmd::History(args) => cmd_history(args, &cli, &ctx),
         Cmd::Entity(args) => cmd_entity(args, &cli, &ctx),
         Cmd::Alias(args) => cmd_alias(args, &cli, &ctx),
@@ -106,17 +107,9 @@ fn cmd_remember(args: &RememberArgs, cli: &Cli, ctx: &Ctx) -> anyhow::Result<()>
 
     let object = match (&args.value, &args.entity) {
         (_, Some(e)) => Object::entity(e),
-        // A bare `--value 10` means the number ten, not the string "10": numeric
-        // facts are what the temporal model is mostly for.
-        (Some(v), None) => match v.parse::<f64>() {
-            Ok(n) => {
-                let o = Object::num(n);
-                match &args.unit {
-                    Some(u) => o.with_unit(u),
-                    None => o,
-                }
-            }
-            Err(_) => Object::text(v),
+        (Some(v), None) => match &args.unit {
+            Some(u) => Object::parse_literal(v).with_unit(u),
+            None => Object::parse_literal(v),
         },
         (None, None) => anyhow::bail!("pass --value or --entity"),
     };
@@ -239,6 +232,64 @@ fn cmd_recall(args: &RecallArgs, cli: &Cli, ctx: &Ctx) -> anyhow::Result<()> {
         }
         if let Some(l) = &learned {
             emit(&format!("(learned: {:?} names {})", l.alias, l.entity));
+        }
+    }
+    Ok(())
+}
+
+/// Lists which subjects hold a predicate.
+///
+/// Prints one statement per line, exactly like `get` and `recall`, so the three
+/// reads stay interchangeable in a pipe. The count is only mentioned when the
+/// limit cut the answer short -- otherwise the lines *are* the count, and saying
+/// so twice invites the reader to wonder which number to trust.
+fn cmd_which(args: &brain::cli::WhichArgs, cli: &Cli, ctx: &Ctx) -> anyhow::Result<()> {
+    let mut q = WhichQuery::new(&args.predicate)
+        .order(args.order)
+        .limit(args.limit);
+    q.desc = args.desc;
+    if let Some(v) = &args.value {
+        q = q.value(Object::parse_literal(v));
+    }
+    if let Some(e) = &args.entity {
+        q = q.value(Object::entity(e));
+    }
+    if let Some(w) = &args.as_of {
+        q = q.when(When::AsOf(parse_when(w)?));
+    }
+    if args.history {
+        q = q.when(When::History);
+    }
+    if let Some(s) = &args.scope {
+        q = q.scope(s);
+    }
+
+    let b = open(cli, ctx)?;
+    let set = b.which(&q)?;
+
+    if cli.json {
+        emit(&serde_json::to_string_pretty(&answer(
+            &b,
+            serde_json::json!({
+                "predicate": args.predicate,
+                "matched": set.matched,
+                "truncated": set.truncated,
+                "facts": set.facts,
+            }),
+        ))?);
+    } else {
+        if set.facts.is_empty() {
+            emit("(nothing matches)");
+        }
+        for f in &set.facts {
+            emit(&f.statement);
+        }
+        if set.truncated {
+            emit(&format!(
+                "({} of {} -- raise --limit to see the rest)",
+                set.facts.len(),
+                set.matched
+            ));
         }
     }
     Ok(())

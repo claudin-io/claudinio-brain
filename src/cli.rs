@@ -3,7 +3,7 @@
 //! Every command accepts the same brain selectors, and every JSON payload
 //! carries the brain's identity so an agent can never confuse two brains.
 
-use crate::brain::Cardinality;
+use crate::brain::{Cardinality, Order};
 use crate::locate::{Ctx, Selection};
 use clap::{Args, Parser, Subcommand};
 use jiff::Timestamp;
@@ -77,6 +77,9 @@ pub enum Cmd {
 
     /// Search the brain with a natural-language question.
     Recall(RecallArgs),
+
+    /// List which subjects hold a predicate, and what the value is.
+    Which(WhichArgs),
 
     /// Show the full trajectory of a subject/predicate pair.
     History(GetArgs),
@@ -228,6 +231,49 @@ pub struct RecallArgs {
     pub learn: bool,
 }
 
+/// A set question, filtered the same way the fact was written.
+///
+/// `--value` and `--entity` mirror [`RememberArgs`] deliberately: whichever one
+/// recorded the fact is the one that selects it back, so nobody has to remember
+/// which column a value landed in.
+#[derive(Args, Debug)]
+pub struct WhichArgs {
+    pub predicate: String,
+
+    /// A literal value, matched exactly. Omit to list every subject holding the
+    /// predicate at all.
+    #[arg(conflicts_with = "entity")]
+    pub value: Option<String>,
+
+    /// Match an entity-valued object by identity rather than by spelling.
+    #[arg(long, conflicts_with = "value")]
+    pub entity: Option<String>,
+
+    /// Answer as of this instant instead of with what currently holds.
+    #[arg(long, value_name = "WHEN", conflicts_with = "history")]
+    pub as_of: Option<String>,
+
+    /// Return closed intervals too, not only what holds.
+    #[arg(long)]
+    pub history: bool,
+
+    /// `subject`, `value` or `since`.
+    #[arg(long = "order-by", default_value = "subject", value_parser = parse_order)]
+    pub order: Order,
+
+    #[arg(long)]
+    pub desc: bool,
+
+    /// Far higher than `recall`'s, because a list that silently stops at ten is
+    /// worse than no list. The answer always reports how many matched, so a cut
+    /// is visible rather than assumed.
+    #[arg(long, default_value_t = 200)]
+    pub limit: usize,
+
+    #[arg(long)]
+    pub scope: Option<String>,
+}
+
 #[derive(Args, Debug)]
 pub struct AliasArgs {
     /// The entity being named. Must already exist.
@@ -294,6 +340,10 @@ pub struct GetArgs {
 
 fn parse_cardinality(s: &str) -> Result<Cardinality, String> {
     Cardinality::parse(s).ok_or_else(|| format!("expected `single` or `multi`, got {s:?}"))
+}
+
+fn parse_order(s: &str) -> Result<Order, String> {
+    Order::parse(s).ok_or_else(|| format!("expected `subject`, `value` or `since`, got {s:?}"))
 }
 
 /// Accepts a bare date as well as a full RFC 3339 instant, because `--at

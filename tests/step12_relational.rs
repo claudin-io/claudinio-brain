@@ -284,7 +284,11 @@ fn a_brain_written_before_v5_opens_and_gains_the_column() {
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(version, "5");
+    // Against the constant rather than a literal: the ladder is cumulative, so an
+    // old brain must arrive at whatever the current version is, and a test that
+    // named one version would have to be edited on every bump -- which is exactly
+    // when it is most useful for it to be checking something.
+    assert_eq!(version, brain::store::SCHEMA_VERSION.to_string());
 
     // Migrated brains start conservative: every predicate keeps storing objects
     // exactly as it did until somebody says otherwise.

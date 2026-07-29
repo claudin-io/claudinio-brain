@@ -40,6 +40,134 @@ pub struct EntityView {
     pub neighbours: Vec<Neighbour>,
 }
 
+/// A question about a *set*: which subjects hold this predicate, optionally with
+/// this value, at some instant.
+///
+/// The counterpart to [`crate::recall::RecallQuery`], and deliberately not a
+/// variant of it. `recall` answers with what is *relevant* -- it ranks, it guesses
+/// at intent, and it truncates -- which is right for a question and wrong for a
+/// list. This answers with what *matches*, and reports how much matched so the
+/// caller can tell a complete list from the top of one.
+#[derive(Debug, Clone)]
+pub struct WhichQuery {
+    pub predicate: String,
+    /// The value to match, or `None` for every subject holding the predicate at
+    /// all. A literal is matched exactly, the way it was written.
+    pub value: Option<Object>,
+    pub when: When,
+    pub order: Order,
+    pub desc: bool,
+    pub limit: usize,
+    pub scope: Option<String>,
+}
+
+impl WhichQuery {
+    pub fn new(predicate: impl Into<String>) -> Self {
+        Self {
+            predicate: predicate.into(),
+            value: None,
+            when: When::Now,
+            order: Order::Subject,
+            desc: false,
+            limit: 200,
+            scope: None,
+        }
+    }
+
+    pub fn value(mut self, o: Object) -> Self {
+        self.value = Some(o);
+        self
+    }
+
+    pub fn when(mut self, w: When) -> Self {
+        self.when = w;
+        self
+    }
+
+    pub fn order(mut self, o: Order) -> Self {
+        self.order = o;
+        self
+    }
+
+    pub fn limit(mut self, n: usize) -> Self {
+        self.limit = n;
+        self
+    }
+
+    pub fn scope(mut self, s: impl Into<String>) -> Self {
+        self.scope = Some(s.into());
+        self
+    }
+}
+
+/// What a set answer is sorted by.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Order {
+    /// The subject's identity key. The default, because a list of things reads
+    /// best in the order the things are named.
+    Subject,
+    /// The object. Numbers sort numerically and text lexicographically, which is
+    /// what makes an ISO-8601 date usable as a deadline without a date type.
+    Value,
+    /// When each fact became true, oldest first.
+    Since,
+}
+
+impl Order {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Subject => "subject",
+            Self::Value => "value",
+            Self::Since => "since",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "subject" => Some(Self::Subject),
+            "value" => Some(Self::Value),
+            "since" => Some(Self::Since),
+            _ => None,
+        }
+    }
+
+    /// The sort keys, in order. `f.id` is appended by the caller and is always
+    /// ascending, so equal keys never reorder between runs.
+    fn keys(self) -> &'static [&'static str] {
+        match self {
+            Self::Subject => &["e.key"],
+            Self::Value => &["f.object_num", "f.object_text"],
+            Self::Since => &["f.valid_from"],
+        }
+    }
+}
+
+/// The facts a set question matched, and how many there were.
+///
+/// `matched` is the whole point of this type. A vector store can always return
+/// ten things and can never tell you whether ten was all of them; an agent
+/// deciding what to do next needs to know the difference between "these are the
+/// open tasks" and "these are ten of the open tasks".
+#[derive(Debug, Clone, Serialize)]
+pub struct WhichAnswer {
+    pub facts: Vec<Fact>,
+    /// How many facts satisfied the query, ignoring `limit`.
+    pub matched: i64,
+    /// Whether `limit` cut the answer short.
+    pub truncated: bool,
+}
+
+impl WhichAnswer {
+    fn empty() -> Self {
+        Self {
+            facts: Vec::new(),
+            matched: 0,
+            truncated: false,
+        }
+    }
+}
+
 /// An entity reached by walking relations, and the relation that got there.
 #[derive(Debug, Clone, Serialize)]
 pub struct Neighbour {
@@ -505,6 +633,83 @@ impl Brain {
     /// Loads one fact by id.
     pub fn fact(&self, id: i64) -> Result<Fact> {
         load_fact(self.conn(), id)
+    }
+
+    /// Which subjects hold a predicate, and optionally hold it with a given value.
+    ///
+    /// The read every other one here cannot do: it starts from a predicate instead
+    /// of from a name. Everything above resolves a subject through [`find_entity`]
+    /// first, which answers "what is this thing's status" and can never answer
+    /// "which things are open".
+    ///
+    /// Two details are load-bearing:
+    ///
+    /// - **A literal matches on `object_text`, edge or not.** An entity-valued
+    ///   object carries its label in that column too, so a selection keeps working
+    ///   across the moment somebody converts a predicate from strings into real
+    ///   relations. [`crate::kin`] relies on the same property for the same reason.
+    /// - **"Now" is the instant the question is asked**, not "the row nobody has
+    ///   closed yet". A fact dated next week is the newest thing known and is not
+    ///   true today; a list of what holds now must not contain it.
+    pub fn which(&self, q: &WhichQuery) -> Result<WhichAnswer> {
+        let conn = self.conn();
+        let predicate = require_key("predicate", &q.predicate)?;
+
+        // Resolved before the query runs, so a name the brain does not know is an
+        // empty answer rather than a filter that matches everything.
+        let (value_sql, value_bind): (&str, Option<rusqlite::types::Value>) = match &q.value {
+            None => ("", None),
+            Some(Object::Text(s)) => (" AND f.object_text = ?", Some(s.clone().into())),
+            Some(Object::Num { value, .. }) => (" AND f.object_num = ?", Some((*value).into())),
+            Some(Object::Entity(name)) => match find_entity(conn, &norm::key(name))? {
+                Some(id) => (" AND f.object_entity_id = ?", Some(id.into())),
+                None => return Ok(WhichAnswer::empty()),
+            },
+        };
+
+        let when = match q.when {
+            When::Now => When::AsOf(self.clock.now()),
+            other => other,
+        };
+        let filter = TemporalFilter::for_when(when, q.scope.clone());
+
+        let mut binds: Vec<rusqlite::types::Value> = vec![predicate.into()];
+        binds.extend(value_bind);
+        let temporal_sql = filter.bind(&mut binds);
+        let where_sql = format!(" WHERE f.predicate = ?{value_sql}{temporal_sql}");
+
+        // Counted separately rather than inferred from the rows, because the
+        // whole difference between this and `recall` is being able to say how
+        // much was left out.
+        let matched: i64 = conn.query_row(
+            &format!("SELECT count(*) FROM fact f{where_sql}"),
+            rusqlite::params_from_iter(binds.iter()),
+            |r| r.get(0),
+        )?;
+
+        let dir = if q.desc { " DESC" } else { "" };
+        let order_sql = q
+            .order
+            .keys()
+            .iter()
+            .map(|k| format!("{k}{dir}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        binds.push((q.limit as i64).into());
+        let mut stmt = conn.prepare(&format!(
+            "{SELECT_FACT}{where_sql} ORDER BY {order_sql}, f.id LIMIT ?"
+        ))?;
+        let mut facts = Vec::new();
+        for row in stmt.query_map(rusqlite::params_from_iter(binds), row_to_fact)? {
+            facts.push(row??);
+        }
+
+        Ok(WhichAnswer {
+            truncated: matched > facts.len() as i64,
+            matched,
+            facts,
+        })
     }
 
     /// What is known about one entity, and what it connects to.

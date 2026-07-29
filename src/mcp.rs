@@ -26,7 +26,7 @@
 //! and no lock is ever held across an await. Making these `async` would buy
 //! nothing and add a way to deadlock.
 
-use crate::brain::{Assertion, Brain, BrainError, Object};
+use crate::brain::{Assertion, Brain, BrainError, Object, Order, WhichQuery};
 use crate::recall::{RecallQuery, When};
 use rmcp::handler::server::wrapper::{Json, Parameters};
 use rmcp::model::{ErrorData, ServerCapabilities, ServerInfo};
@@ -191,6 +191,39 @@ pub struct RecallParams {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct WhichParams {
+    /// The property to list by, e.g. `status`, `owner`, `due`, `preco`.
+    pub predicate: String,
+    /// Match only subjects whose value is exactly this. Omit to list every
+    /// subject that holds the predicate at all, whatever its value.
+    #[serde(default)]
+    pub value: Option<String>,
+    /// Match an entity-valued object by identity rather than by spelling, so
+    /// aliases and other spellings of the same thing are included. Provide this
+    /// or `value`, never both.
+    #[serde(default)]
+    pub entity: Option<String>,
+    /// List the set as it stood at this instant instead of as it stands now.
+    #[serde(default)]
+    pub as_of: Option<String>,
+    /// Include closed intervals, i.e. subjects that used to match.
+    #[serde(default)]
+    pub history: bool,
+    /// `subject` (default), `value` or `since`. Sort by `value` to order by an
+    /// ISO-8601 date, which sorts chronologically.
+    #[serde(default)]
+    pub order_by: Option<String>,
+    #[serde(default)]
+    pub desc: bool,
+    /// Defaults to 200. Compare `matched` against the number of facts returned
+    /// to find out whether this cut anything off.
+    #[serde(default)]
+    pub limit: Option<usize>,
+    #[serde(default)]
+    pub scope: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct GetParams {
     pub subject: String,
     pub predicate: String,
@@ -288,6 +321,18 @@ pub struct RecallResult {
 }
 
 #[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct WhichResult {
+    /// The matching facts, in the order asked for.
+    pub facts: serde_json::Value,
+    /// How many matched in total, before `limit`. This is the number `recall`
+    /// cannot give you: if it equals the length of `facts`, you are holding the
+    /// complete set and can act on it as one.
+    pub matched: i64,
+    /// True when `limit` cut the answer short, so what you have is a prefix.
+    pub truncated: bool,
+}
+
+#[derive(serde::Serialize, schemars::JsonSchema)]
 pub struct ValueResult {
     /// The single answer, or null when nothing is known -- which is a real
     /// answer, and better than guessing.
@@ -361,12 +406,9 @@ impl BrainServer {
     ) -> Result<Json<WriteResult>, ErrorData> {
         let object = match (&p.value, &p.entity) {
             (_, Some(e)) => Object::entity(e),
-            (Some(v), None) => match v.parse::<f64>() {
-                Ok(n) => match &p.unit {
-                    Some(u) => Object::num(n).with_unit(u),
-                    None => Object::num(n),
-                },
-                Err(_) => Object::text(v),
+            (Some(v), None) => match &p.unit {
+                Some(u) => Object::parse_literal(v).with_unit(u),
+                None => Object::parse_literal(v),
             },
             (None, None) => {
                 return Err(ErrorData::invalid_params("pass `value` or `entity`", None));
@@ -464,6 +506,62 @@ impl BrainServer {
         Ok(Json(RecallResult {
             hits: json!(hits),
             learned: json!(learned),
+        }))
+    }
+
+    /// List which subjects hold a predicate, and what their value is. This is the
+    /// tool for a question about a **set** rather than about one thing: which
+    /// tasks are open, which services a person owns, what is due this week.
+    ///
+    /// Use it instead of `recall` whenever you need *all* of something. `recall`
+    /// ranks by relevance and returns the best few, and cannot tell you whether
+    /// it left anything out; this returns everything that matches and reports
+    /// `matched`, so you can act on the set as a set. Use `get` when you already
+    /// know which subject you mean.
+    ///
+    /// Defaults to what is true now. A fact dated in the future is not "now" and
+    /// will not appear until its time.
+    #[tool(name = "which")]
+    fn which(
+        &self,
+        Parameters(p): Parameters<WhichParams>,
+    ) -> Result<Json<WhichResult>, ErrorData> {
+        let mut q = WhichQuery::new(&p.predicate).limit(p.limit.unwrap_or(200));
+        q.desc = p.desc;
+        match (&p.value, &p.entity) {
+            (Some(_), Some(_)) => {
+                return Err(ErrorData::invalid_params(
+                    "pass `value` or `entity`, not both",
+                    None,
+                ));
+            }
+            (Some(v), None) => q = q.value(Object::parse_literal(v)),
+            (None, Some(e)) => q = q.value(Object::entity(e)),
+            (None, None) => {}
+        }
+        if let Some(o) = &p.order_by {
+            q = q.order(Order::parse(o).ok_or_else(|| {
+                ErrorData::invalid_params(
+                    format!("expected `subject`, `value` or `since`, got {o:?}"),
+                    None,
+                )
+            })?);
+        }
+        if let Some(t) = parse_at(p.as_of.as_ref())? {
+            q = q.when(When::AsOf(t));
+        }
+        if p.history {
+            q = q.when(When::History);
+        }
+        if let Some(s) = &p.scope {
+            q = q.scope(s);
+        }
+
+        let set = self.with(|b| b.which(&q))?;
+        Ok(Json(WhichResult {
+            facts: json!(set.facts),
+            matched: set.matched,
+            truncated: set.truncated,
         }))
     }
 

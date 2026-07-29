@@ -96,6 +96,12 @@ CREATE INDEX fact_timeline ON fact(entity_id, predicate, valid_from);
 CREATE INDEX fact_open     ON fact(entity_id, predicate) WHERE valid_to IS NULL;
 CREATE INDEX fact_inbound  ON fact(object_entity_id) WHERE object_entity_id IS NOT NULL;
 
+-- Predicate-first access, for asking which subjects hold a value rather than
+-- which value a subject holds. Every index above leads with `entity_id`, which
+-- is the shape of "what is task_42's status" and useless for "which tasks are
+-- open" -- that question had to scan the whole table before this existed.
+CREATE INDEX fact_by_predicate ON fact(predicate, object_text, object_num);
+
 -- The graph, as a view over the facts that point at an entity: the read model for
 -- anyone opening this file in a sqlite3 shell.
 --
