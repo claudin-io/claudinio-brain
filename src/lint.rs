@@ -8,7 +8,7 @@
 //! symptom is an answer that never arrives.
 //!
 //! The motivating case: a brain where 59 of 69 `is_a` facts had a string where an
-//! entity belonged. Every coupon knew its class and no coupon was reachable from
+//! entity belonged. Every voucher knew its class and no voucher was reachable from
 //! it. Discovering that required opening a 3D scene and noticing loose dots. A
 //! memory system that can detect this and does not report it is failing at its
 //! job, so this module exists to make that a command instead of an observation.
@@ -41,8 +41,8 @@ const MAX_CLASS_LEN: usize = 64;
 ///
 /// See [`twins`]. Two is the usual near-duplicate cut: it covers a plural, a
 /// dropped accent and a transposition, and stops short of the three edits that
-/// separate genuinely parallel names like `claudinio_senior` and
-/// `claudius_senior`.
+/// separate genuinely parallel names like `servico_alto` and
+/// `parceiro_alto`.
 const MAX_TWIN_DISTANCE: usize = 2;
 
 /// Keys shorter than this are not compared.
@@ -96,7 +96,7 @@ pub struct MixedPredicate {
 
 /// A string that several entities share and that is not an entity.
 ///
-/// If three things are `cupao_stripe`, then `cupao_stripe` is a thing. Promoting
+/// If three things are `voucher_sazonal`, then `voucher_sazonal` is a thing. Promoting
 /// it to a node is what lets the three reach each other.
 #[derive(Debug, Clone, Serialize)]
 pub struct CandidateClass {
@@ -109,7 +109,7 @@ pub struct CandidateClass {
 /// Two entity keys close enough to be one name written twice.
 ///
 /// The failure this catches is a spelling that drifted between two writes --
-/// `plano_de_lugar` and `planos_de_lugar` -- which the brain stores as two
+/// `regra_de_acesso` and `regras_de_acesso` -- which the brain stores as two
 /// entities growing two parallel histories. The SKILL warns that this is not
 /// recoverable; nothing ever checked for it.
 #[derive(Debug, Clone, Serialize)]
@@ -390,12 +390,12 @@ fn candidate_classes(conn: &Connection) -> Result<Vec<CandidateClass>, BrainErro
 ///
 /// Edit distance rather than a shared-suffix rule, and the difference is not
 /// cosmetic. A suffix rule reports every family that names its members the same
-/// way -- `claudinio_senior` against `claudius_senior` -- which is good naming,
+/// way -- `servico_alto` against `parceiro_alto` -- which is good naming,
 /// not a defect. Measuring the whole key instead asks the question that matters:
 /// could one of these be the other, typed slightly differently?
 ///
-/// Pairs already joined by a relation or an alias are dropped. `codigo_5tulsxzo`
-/// and `cupao_5tulsxzo` look like one thing under two names right up until you
+/// Pairs already joined by a relation or an alias are dropped. `resgate_x7k2m9`
+/// and `voucher_x7k2m9` look like one thing under two names right up until you
 /// notice the `resgata` edge between them, at which point they are plainly two
 /// things somebody modelled correctly.
 fn twins(conn: &Connection) -> Result<Vec<Twin>, BrainError> {
@@ -439,7 +439,7 @@ fn twins(conn: &Connection) -> Result<Vec<Twin>, BrainError> {
 
 /// Whether two keys are the same name carrying different numbers.
 ///
-/// `codigo_upgrade25_liu67871` and `codigo_upgrade10_liu67871` are two edits
+/// `resgate_nivel25_ref` and `resgate_nivel10_ref` are two edits
 /// apart and are obviously not each other misspelled: numbering is how a series
 /// gets named, and nobody mistypes 25 as 10. Stripping the digits and asking
 /// whether what remains is identical separates a series from a typo without

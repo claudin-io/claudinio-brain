@@ -1,0 +1,38 @@
+// Questions whose useful answer sits on an entity NOTHING connects to the one
+// asked about -- no edge, no shared words, only a value the two happen to hold in
+// common. This suite is what justifies the kin channel over the graph channel.
+//
+// The shapes are taken from a production brain, with its names replaced: that
+// brain had 59 of 69 `is_a` facts stored as strings, so several cases here record
+// a class as text rather than as an edge. A channel that only worked on
+// well-formed brains would not have helped the brain that needed it.
+//
+// A parallel recollection is not supposed to beat the answer the question
+// actually asked for: when the query names an entity, that entity's own facts are
+// the right top hit and the kin fact belongs just below. Cases of that shape
+// therefore expect both. The two that ask for a property the anchor does not have
+// are the exception -- there the lateral fact is the only answer there is.
+//
+// What the numbers turned out to say: R@5 and R@10 do not move when the channel
+// is switched off (0.958 and 1.000 either way). The lateral facts were reachable
+// all along, and what kinship supplies is *precision* -- R@1 0.417 to 0.667, MRR
+// 0.875 to 1.000, top-1 0.750 to 1.000. That is the same shape the graph channel
+// had in Passo 6, where Recall@10 was already 1.000 before expansion and all the
+// work was in getting the answer to the top.
+//
+// The load-bearing case is "the rare pair outranks the common one". Cohorts and
+// noise come in the same size in practice -- in the brain above, a class joined
+// 23 entities and a `valido true` flag joined 22 -- so no threshold can separate
+// them and inverse document frequency has to do the whole job.
+{"name":"a cohort whose class was stored as a string","facts":[{"id":"anchor","subject":"voucher_a","predicate":"is_a","text":"voucher_sazonal"},{"id":"sib","subject":"voucher_b","predicate":"is_a","text":"voucher_sazonal"},{"id":"answer","subject":"voucher_b","predicate":"percent_off","num":50},{"id":"far","subject":"plano_pro","predicate":"monthly_price","num":59}],"query":"voucher_a","expect":["anchor","answer"]}
+{"name":"a cohort survives the class becoming a real edge","facts":[{"id":"anchor","subject":"voucher_a","predicate":"is_a","entity":"voucher_sazonal"},{"id":"sib","subject":"voucher_b","predicate":"is_a","entity":"voucher_sazonal"},{"id":"answer","subject":"voucher_b","predicate":"percent_off","num":50},{"id":"far","subject":"plano_pro","predicate":"monthly_price","num":59}],"query":"voucher_a","expect":["anchor","answer"]}
+// The anchor holds one pair five other vouchers also hold and one pair only a
+// single voucher shares. Either of the anchor's own facts is a fine top hit; what
+// this case measures is which *sibling* comes back, and the five holding `valido
+// true` must not crowd out the one holding the discount.
+{"name":"the rare pair outranks the common one","facts":[{"id":"a1","subject":"voucher_a","predicate":"valido","text":"true"},{"id":"a2","subject":"voucher_a","predicate":"percent_off","num":50},{"id":"answer","subject":"voucher_b","predicate":"percent_off","num":50},{"id":"n1","subject":"voucher_c","predicate":"valido","text":"true"},{"id":"n2","subject":"voucher_d","predicate":"valido","text":"true"},{"id":"n3","subject":"voucher_e","predicate":"valido","text":"true"},{"id":"n4","subject":"voucher_f","predicate":"valido","text":"true"},{"id":"n5","subject":"voucher_g","predicate":"valido","text":"true"}],"query":"voucher_a","expect":["a1","a2","answer"]}
+{"name":"a property the anchor does not have, on a voucher sharing its discount","facts":[{"id":"a1","subject":"voucher_a","predicate":"percent_off","num":50},{"id":"kin","subject":"voucher_b","predicate":"percent_off","num":50},{"id":"answer","subject":"voucher_b","predicate":"expira","text":"2026-07-30"},{"id":"n1","subject":"plano_pro","predicate":"expira","text":"2027-01-01"},{"id":"n2","subject":"trial_gratis","predicate":"expira","text":"2026-09-09"},{"id":"n3","subject":"campanha_verao","predicate":"expira","text":"2026-08-01"}],"query":"quando expira o voucher_a","expect":["answer"]}
+{"name":"two things a shared label is the only thing joining","facts":[{"id":"l1","subject":"plano_base","predicate":"label","text":"Base"},{"id":"l2","subject":"lugar_base","predicate":"label","text":"Base"},{"id":"answer","subject":"lugar_base","predicate":"lugares_minimos","num":3},{"id":"n1","subject":"plano_pro","predicate":"label","text":"Pro"},{"id":"n2","subject":"plano_ultra","predicate":"label","text":"Ultra"},{"id":"n3","subject":"lugar_pro","predicate":"lugares_minimos","num":5}],"query":"quantos lugares minimos tem o plano_base","expect":["answer"]}
+{"name":"kinship needs no edge anywhere in the brain","facts":[{"id":"a","subject":"servico_base","predicate":"servido_por","text":"motor_rapido"},{"id":"sib","subject":"servico_medio","predicate":"servido_por","text":"motor_rapido"},{"id":"answer","subject":"servico_medio","predicate":"multiplo_medido","num":14.8},{"id":"n1","subject":"servico_alto","predicate":"servido_por","text":"motor_grande"},{"id":"n2","subject":"servico_premium","predicate":"servido_por","text":"motor_enorme"}],"query":"servico_base","expect":["a","answer"]}
+{"name":"a value that closed stops making kin","facts":[{"id":"old","subject":"voucher_a","predicate":"percent_off","num":50,"at":"2026-01-01"},{"id":"now","subject":"voucher_a","predicate":"percent_off","num":10,"at":"2026-06-01"},{"id":"answer","subject":"voucher_b","predicate":"percent_off","num":10},{"id":"stale","subject":"voucher_c","predicate":"percent_off","num":50}],"query":"voucher_a","expect":["now","answer"]}
+{"name":"a pair everything holds pulls in nothing","facts":[{"id":"answer","subject":"api_gateway","predicate":"timeout","num":30},{"id":"a2","subject":"api_gateway","predicate":"ativo","text":"true"},{"id":"n1","subject":"checkout","predicate":"ativo","text":"true"},{"id":"n2","subject":"payments","predicate":"ativo","text":"true"},{"id":"n3","subject":"billing","predicate":"ativo","text":"true"}],"query":"qual e o timeout do api_gateway","expect":["answer"]}

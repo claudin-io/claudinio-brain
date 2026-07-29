@@ -46,8 +46,8 @@ fn a_predicate_used_both_ways_is_reported_with_both_counts() {
     // The shape that started this: some writers passed an entity, most passed a
     // string, and every string one is invisible to the graph.
     b.link("v2_pro", "is_a", "plano", None).unwrap();
-    text(&b, "cupao_a", "is_a", "cupao_stripe");
-    text(&b, "cupao_b", "is_a", "cupao_stripe");
+    text(&b, "voucher_a", "is_a", "voucher_sazonal");
+    text(&b, "voucher_b", "is_a", "voucher_sazonal");
 
     let report = check(&b);
     let mixed = report
@@ -57,7 +57,7 @@ fn a_predicate_used_both_ways_is_reported_with_both_counts() {
         .expect("is_a reported as mixed");
     assert_eq!(mixed.as_entity, 1);
     assert_eq!(mixed.as_text, 2);
-    assert!(mixed.examples.contains(&"cupao_stripe".to_string()));
+    assert!(mixed.examples.contains(&"voucher_sazonal".to_string()));
 }
 
 #[test]
@@ -93,13 +93,13 @@ fn a_string_several_entities_share_is_a_candidate_class() {
     let tmp = TempDir::new().unwrap();
     let b = brain(&tmp);
 
-    text(&b, "cupao_a", "is_a", "cupao_stripe");
-    text(&b, "cupao_b", "is_a", "cupao_stripe");
-    text(&b, "cupao_c", "is_a", "cupao_stripe");
+    text(&b, "voucher_a", "is_a", "voucher_sazonal");
+    text(&b, "voucher_b", "is_a", "voucher_sazonal");
+    text(&b, "voucher_c", "is_a", "voucher_sazonal");
 
     let found = check(&b);
     let class = found.candidate_classes.first().expect("a candidate class");
-    assert_eq!(class.value, "cupao_stripe");
+    assert_eq!(class.value, "voucher_sazonal");
     assert_eq!(class.entities, 3);
 }
 
@@ -121,8 +121,8 @@ fn booleans_and_prose_are_not_reported_as_classes() {
 
     // Flags are the most-shared strings in any brain. Left in, they would bury
     // the real candidates.
-    text(&b, "cupao_a", "ativo", "true");
-    text(&b, "cupao_b", "ativo", "true");
+    text(&b, "voucher_a", "ativo", "true");
+    text(&b, "voucher_b", "ativo", "true");
 
     let essay = "a".repeat(200);
     text(&b, "doc_a", "resumo", &essay);
@@ -140,7 +140,7 @@ fn a_string_that_already_names_an_entity_is_not_a_candidate_class() {
     // the mixed-predicate finding rather than a missing class.
     b.link("v2_pro", "is_a", "plano", None).unwrap();
     text(&b, "v2_lite", "is_a", "plano");
-    text(&b, "v2_ultra", "is_a", "plano");
+    text(&b, "plano_ultra", "is_a", "plano");
 
     assert!(check(&b).candidate_classes.is_empty());
 }
@@ -194,8 +194,8 @@ fn a_spelling_that_drifted_is_reported() {
     let tmp = TempDir::new().unwrap();
     let b = brain(&tmp);
 
-    text(&b, "plano_de_lugar", "nota", "singular");
-    text(&b, "planos_de_lugar", "nota", "plural");
+    text(&b, "regra_de_acesso", "nota", "singular");
+    text(&b, "regras_de_acesso", "nota", "plural");
 
     let twins = check(&b).twins;
     assert_eq!(twins.len(), 1);
@@ -209,10 +209,10 @@ fn parallel_family_names_are_not_twins() {
 
     // Two families naming their members the same way is good naming. A rule that
     // matched on the shared suffix would report every one of these.
-    text(&b, "claudinio_senior", "nota", "a");
-    text(&b, "claudius_senior", "nota", "b");
-    text(&b, "claudinio_associate", "nota", "c");
-    text(&b, "claudius_associate", "nota", "d");
+    text(&b, "servico_alto", "nota", "a");
+    text(&b, "parceiro_alto", "nota", "b");
+    text(&b, "servico_base", "nota", "c");
+    text(&b, "parceiro_base", "nota", "d");
 
     assert!(check(&b).twins.is_empty());
 }
@@ -223,8 +223,8 @@ fn numbered_members_of_a_series_are_not_twins() {
     let b = brain(&tmp);
 
     // Nobody mistypes 25 as 10; numbering is how a series gets named.
-    text(&b, "codigo_upgrade25_liu", "percent_off", "25");
-    text(&b, "codigo_upgrade10_liu", "percent_off", "10");
+    text(&b, "resgate_nivel25_ref", "percent_off", "25");
+    text(&b, "resgate_nivel10_ref", "percent_off", "10");
 
     assert!(check(&b).twins.is_empty());
 }
@@ -234,10 +234,10 @@ fn two_entities_a_relation_already_joins_are_not_twins() {
     let tmp = TempDir::new().unwrap();
     let b = brain(&tmp);
 
-    // A code and the coupon it redeems look like one thing spelled twice right up
+    // A code and the voucher it redeems look like one thing spelled twice right up
     // until you notice the edge, at which point they are two things modelled
     // correctly.
-    b.link("codigo_promo", "resgata", "codigo_prom", None).unwrap();
+    b.link("resgate_promo", "resgata", "resgate_prom", None).unwrap();
 
     assert!(check(&b).twins.is_empty());
 }

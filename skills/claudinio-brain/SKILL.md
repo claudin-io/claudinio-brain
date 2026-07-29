@@ -147,16 +147,16 @@ it is an entity.** A class, an owner, a supplier, a service, a category, a
 team. Only literals — numbers, dates, flags, one short sentence — are `--value`.
 
 ```bash
-brain remember --subject cupao_x --predicate is_a --value  cupao_stripe   # wrong
-brain remember --subject cupao_x --predicate is_a --entity cupao_stripe   # right
-brain link cupao_x is_a cupao_stripe                                      # same thing
+brain remember --subject voucher_x --predicate is_a --value  voucher_sazonal   # wrong
+brain remember --subject voucher_x --predicate is_a --entity voucher_sazonal   # right
+brain link voucher_x is_a voucher_sazonal                                      # same thing
 ```
 
 The wrong one is dangerous precisely because it is not an error. It succeeds, it
 reads back correctly, `get` and `history` print it perfectly — and no walk of the
 graph can follow it, so the fact is invisible to the one channel that finds
 answers a question never named. In one real brain this happened to 59 of 69
-`is_a` facts: every coupon knew its class, and no coupon could be reached from
+`is_a` facts: every voucher knew its class, and no voucher could be reached from
 it. Nothing failed for months.
 
 `is_a`, `depends_on`, `part_of`, `owned_by`, `runs_on`, `serves` and anything

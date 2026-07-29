@@ -79,18 +79,31 @@ fn main() -> anyhow::Result<()> {
     let update = args.iter().any(|a| a == "--update-baseline");
     let show_misses = args.iter().any(|a| a == "--misses");
 
-    let suites = ["retrieval", "temporal", "graph", "alias"];
+    let suites = ["retrieval", "temporal", "graph", "alias", "kin"];
     let ablations: Vec<(&str, Vec<Channel>)> = vec![
         ("bm25", vec![Channel::Bm25]),
         ("alias", vec![Channel::Alias]),
         ("semantic", vec![Channel::Semantic]),
+        ("kin", vec![Channel::Kin]),
         ("bm25+alias", vec![Channel::Bm25, Channel::Alias]),
         // Everything except traversal. This is the row the graph channel has to
         // beat to justify itself, so it stays in the table permanently rather
         // than being measured once and forgotten.
         (
             "no-graph",
-            vec![Channel::Bm25, Channel::Alias, Channel::Semantic],
+            vec![Channel::Bm25, Channel::Alias, Channel::Semantic, Channel::Kin],
+        ),
+        // Everything except kinship, for the same reason and with the same
+        // permanence. A channel that cannot beat the table without it does not
+        // deserve to stay in.
+        (
+            "no-kin",
+            vec![
+                Channel::Bm25,
+                Channel::Alias,
+                Channel::Semantic,
+                Channel::Graph,
+            ],
         ),
         ("all", Channel::ALL.to_vec()),
     ];

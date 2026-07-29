@@ -129,7 +129,7 @@ pub struct RememberParams {
     /// walked through, and it creates the named entity if it does not exist yet.
     ///
     /// `is_a`, `depends_on`, `owned_by`, `part_of` and anything like them always
-    /// belong here. Passing `cupao_stripe` as `value` instead stores a string
+    /// belong here. Passing `voucher_sazonal` as `value` instead stores a string
     /// that no walk can follow: the fact reads back correctly and is invisible
     /// to retrieval, and nothing will tell you.
     #[serde(default)]
