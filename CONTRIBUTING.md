@@ -49,7 +49,7 @@ cargo fmt --all --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test
 cargo check --no-default-features    # the core must build without rmcp/tokio
-cargo run --example eval             # recall quality, gated on the baseline
+cargo run --example eval -- --holdout # recall quality, gated on both baselines
 ```
 
 The tree is warning-clean. A PR that adds warnings will fail CI. CI additionally
@@ -93,6 +93,13 @@ change legitimately improves a number, update the baseline **in the same commit*
 so the new number lands in the diff and gets reviewed. Use `--misses` to see
 which cases are still wrong.
 
+`--holdout` adds `evals/holdout.jsonl`, the suite nothing is tuned against. CI
+runs it. It is gated on `evals/holdout.json`, and it **never names a failing
+case** — deliberately, because a case you can see is a case you can adjust a
+constant until it passes. If it regresses and you need to know why, move the case
+into a visible suite and say so in the pull request; a holdout case you have
+looked at is not a holdout case any more.
+
 Add noise facts to your eval cases. FTS5's IDF degenerates on tiny corpora: with
 two documents where one matches, bm25 returns exactly 0.0 and your ranking
 assertion means nothing.
@@ -108,8 +115,11 @@ why in the PR.
   section for exactly this, and borrowing the suites' authority for a number they
   did not decide is worse than admitting the gap.
 - **Do not tune until one visible case flips.** A weight adjusted until a
-  specific eval case passes is overfitting to the eval set. Two suites already
-  carry a permanently-failing case for this reason.
+  specific eval case passes is overfitting to the eval set. Two suites carried a
+  permanently-failing case for this reason until Passo 8, and the way out is the
+  precedent to follow: write more cases of the shape until there is a population
+  to decide against, put the mechanism in front of the holdout, and report what
+  the holdout says — including when it says nothing.
 - **Identity is exact; search is forgiving.** `norm::key` decides identity and
   preserves accents. Accent folding belongs in FTS5's `remove_diacritics`. A
   brain that grows two parallel histories for one thing is unrecoverable.
@@ -127,7 +137,7 @@ why in the PR.
 src/
   store/          opening a brain and keeping it sealed; schema.sql lives here
   brain/          the bitemporal core -- supersede, correct, retract, reassert
-  recall.rs       the four channels and RRF fusion
+  recall.rs       the five channels, RRF fusion, and the demotions that re-rank it
   graph.rs        traversal, bounded by depth, hub blocking and cycle-safe CTEs
   alias.rs        declared and learned names, and the line between them
   embed/          static embeddings; the weights are include_bytes!'d

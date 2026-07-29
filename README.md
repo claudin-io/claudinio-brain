@@ -390,6 +390,7 @@ bitemporal invariant and still be useless if recall never surfaces the answer.
 ```bash
 cargo run --example eval                      # measure, fail on regression
 cargo run --example eval -- --misses          # ...and name the cases still wrong
+cargo run --example eval -- --holdout         # ...and score what nothing is tuned against
 ```
 
 Five suites — retrieval, temporal, graph, alias, kin — each scored against every
@@ -397,6 +398,12 @@ channel alone and fused, so the marginal contribution of a channel is a number
 rather than an opinion. `evals/baseline.json` is committed and CI fails on
 regression, which means improving a number requires updating the baseline in the
 same commit, where it lands in the diff and gets reviewed.
+
+A sixth suite, `holdout.jsonl`, is the control. It is scored and gated like the
+others but **never names a failing case**, because a case you can see is a case
+you can nudge a constant until it passes. Everything the visible suites claim
+about a ranking change is worth exactly as much as what the holdout says about
+the same change.
 
 [evals/README.md](evals/README.md) explains how to read the ablation table, and
 has a section on what these suites *cannot* measure.

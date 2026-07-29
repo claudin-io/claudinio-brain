@@ -135,6 +135,21 @@ const RRF_K: f64 = 60.0;
 /// How many candidates each channel contributes before fusion.
 const CHANNEL_DEPTH: usize = 50;
 
+/// How many words of a question are read.
+///
+/// Not a quality setting -- a bound on work, and on a way `recall` could fail
+/// outright. Every word yields up to two identity terms, the alias channel binds
+/// each of them twice, and SQLite takes 32766 parameters in one statement. Paste
+/// a document into `recall` and it does not return a worse answer, it returns
+/// *"too many SQL variables"*, which an agent has no way to act on.
+///
+/// 512 is far above any question and far below the limit. The distinction that
+/// justifies it: a question has a subject, and something with five thousand words
+/// in it does not -- it is a document someone handed to the wrong function. Words
+/// past the cut are dropped in order rather than sampled, so the same text always
+/// asks the same question.
+const MAX_QUERY_WORDS: usize = 512;
+
 /// How many fused hits seed graph expansion when the question names no entity
 /// the brain recognizes.
 const SEED_DEPTH: usize = 8;
@@ -160,6 +175,87 @@ const SEED_DEPTH: usize = 8;
 /// was sitting on it. 0.5 is the mildest value that reaches the ceiling.
 const BRIDGE_DEMOTION: f64 = 0.5;
 
+/// What a fused score is multiplied by when the fact belongs to an entity the
+/// question neither named nor reached.
+///
+/// A question that names something the brain knows is a question with an address
+/// on it. Everything the walk and kinship find from there is in the
+/// neighbourhood; a fact about an entity outside it arrived by sharing a *word*,
+/// which is the weakest reason a fact can be here. That is a real failure mode
+/// and not a hypothetical: `preco_produto_a` and `produto_c preco 7` share two
+/// tokens after FTS5 splits on the underscore, so the noise fact collected two
+/// channel votes for a question that was never about it.
+///
+/// The rule is inert unless the question named an entity -- a pure paraphrase
+/// points nowhere, so nothing can be off its topic -- and inert again when
+/// nothing is in the neighbourhood, because multiplying every candidate by the
+/// same constant leaves the ranking exactly where it was.
+///
+/// A fact counts as in the neighbourhood by either end. `produto_b fornecido_por
+/// globex` is about globex even though globex is the object, and a question that
+/// names globex is asking about that edge from the far side.
+///
+/// Swept, and the honest result is that these suites price the *rule* and not the
+/// number. 1.0 is the control -- the rule off -- and it is the only value that
+/// changes anything:
+///
+/// | off-topic | graph top-1 | holdout top-1 |
+/// |---|---|---|
+/// | 1.00 (off) | 0.750 | 0.958 |
+/// | 0.95 | **1.000** | **1.000** |
+/// | 0.75 | 1.000 | 1.000 |
+/// | **0.50** | 1.000 | 1.000 |
+/// | 0.25 | 1.000 | 1.000 |
+///
+/// Nothing moves on retrieval, temporal, alias or kin at any setting, which is
+/// the shape a rule about *where* a fact sits should have on suites whose answers
+/// sit where the question pointed.
+///
+/// 0.5 rather than the milder 0.95 for a reason the suites cannot show. The
+/// contests it settles here are RRF near-ties, and a near-tie yields to any nudge
+/// at all; in a larger brain the losing fact can trail by much more than five
+/// percent, and a factor that only works when the margin is already negligible is
+/// a factor that quietly stops working as the brain grows. 0.5 also matches
+/// [`BRIDGE_DEMOTION`], which is the same kind of rule applied to the same kind
+/// of evidence.
+const OFF_TOPIC_DEMOTION: f64 = 0.5;
+
+/// What a fused score is multiplied by when the question names a predicate and
+/// this fact has a different one.
+///
+/// The brain knows its own ontology, and a question that uses one of its
+/// predicate keys has said what it wants in the brain's own vocabulary: `pais`,
+/// `regiao`, `canal`, `expira`. That signal already decides ties *inside* the
+/// walk and the kinship channel; this is the same signal at fusion level, where
+/// it can settle an argument between channels rather than only within one.
+///
+/// Inert unless the question names a predicate the brain actually has, which is
+/// what keeps it from firing on the many questions that describe a predicate
+/// instead of naming it -- "quanto custa" never says `preco`, and nothing here
+/// pretends to know that it means it.
+///
+/// Swept the same way, with the same answer: 1.0 is the only value that changes
+/// anything.
+///
+/// | unasked predicate | alias top-1 | kin top-1 |
+/// |---|---|---|
+/// | 1.00 (off) | 0.800 | 0.900 |
+/// | 0.95 | **1.000** | **1.000** |
+/// | 0.75 | 1.000 | 1.000 |
+/// | **0.50** | 1.000 | 1.000 |
+/// | 0.25 | 1.000 | 1.000 |
+///
+/// 0.5 for the reason given on [`OFF_TOPIC_DEMOTION`], and the two are
+/// independent: each moves only the suites the other leaves flat, and running
+/// both moves exactly the union.
+///
+/// One thing this rule did *not* do, stated because the other one did. The
+/// holdout does not move at any setting here. It holds cases of this shape and
+/// they were already ranked right, so what the holdout says about this rule is
+/// that it breaks nothing -- not that it generalizes. The off-topic rule got the
+/// stronger verdict, and the difference should not be blurred.
+const UNASKED_PREDICATE_DEMOTION: f64 = 0.5;
+
 /// Minimum cosine similarity for a semantic hit to count.
 ///
 /// Nearest-neighbour search always returns *something* -- there is no such thing
@@ -171,6 +267,15 @@ const BRIDGE_DEMOTION: f64 = 0.5;
 /// suites: every value keeps a nonsense query empty, but anything above 0.20
 /// costs graph Recall@10 (1.000 at 0.20, 0.875 at 0.35) by cutting off the
 /// one-hop answers that sit furthest out. Any change here must be re-measured.
+///
+/// One thing this floor does *not* catch, learned the hard way in Passo 8: text
+/// the embedder knows no token of. That comes back as a zero vector, and the
+/// cosine recovered for it is not a cosine at all but an artifact of inverting a
+/// unit-length relation on a vector that has no length -- a constant 0.5, over
+/// any floor worth setting. A query of three control characters therefore
+/// returned ten confident hits while this constant was working exactly as
+/// specified. The guard for that lives in [`Brain::semantic_channel`], because it
+/// is a different failure: not "too far away" but "no direction to be far in".
 const MIN_SEMANTIC_COSINE: f32 = 0.20;
 
 impl Brain {
@@ -198,9 +303,11 @@ impl Brain {
         // found. Both take their anchors from the question first, and only fall
         // back to the fused head when the question names nothing the brain knows.
         let anchors = self.anchors(conn, q, &fused)?;
+        let mut focus = Focus::around(&anchors);
 
         if q.channels.contains(&Channel::Graph) {
-            let walk = self.walk(conn, q, &filter, &anchors)?;
+            let walk = self.walk(conn, q, &filter, &anchors.ids)?;
+            focus.entities.extend(&walk.reached);
             fuse(&mut fused, walk.ranked.clone(), Channel::Graph);
             demote_bridges(&mut fused, &walk);
         }
@@ -209,9 +316,13 @@ impl Brain {
         // provenance that explains it best: being connected is a stronger reason
         // to look somewhere than merely resembling.
         if q.channels.contains(&Channel::Kin) {
-            let ids = kin_channel(conn, &anchors, &filter, &normalized_terms(&q.text))?;
+            let kin = crate::kin::related(conn, &anchors.ids, &filter)?;
+            focus.entities.extend(kin.iter().map(|k| k.entity_id));
+            let ids = kin_channel(conn, &kin, &filter, &normalized_terms(&q.text))?;
             fuse(&mut fused, ids, Channel::Kin);
         }
+
+        self.refocus(conn, &mut fused, &focus, &normalized_terms(&q.text))?;
 
         let mut order: Vec<(i64, f64, Vec<Channel>)> = fused
             .into_iter()
@@ -249,11 +360,53 @@ fn fuse(fused: &mut BTreeMap<i64, (f64, Vec<Channel>)>, ids: Vec<i64>, channel: 
     }
 }
 
+/// Where the question pointed, and whether it pointed anywhere at all.
+struct Anchors {
+    ids: Vec<i64>,
+    /// True when the question named an entity the brain knows, false when the
+    /// anchors were guessed from the fused head. Only the first kind is an
+    /// address; a seed is a hunch, and nothing may be called off-topic for
+    /// disagreeing with a hunch.
+    from_question: bool,
+}
+
+/// The part of the brain this question is about.
+///
+/// Anchors, everything the walk reached from them, and everything kinship found
+/// beside them. See [`OFF_TOPIC_DEMOTION`] for what membership buys. It is built
+/// from whichever expansion channels actually ran, which is deliberate: a
+/// configuration with traversal switched off has not reached those entities and
+/// should not get to claim them as its neighbourhood.
+struct Focus {
+    entities: BTreeSet<i64>,
+    from_question: bool,
+}
+
+impl Focus {
+    fn around(anchors: &Anchors) -> Self {
+        Self {
+            entities: anchors.ids.iter().copied().collect(),
+            from_question: anchors.from_question,
+        }
+    }
+}
+
+/// The columns the re-rank judges a fact by.
+struct Shape {
+    entity: i64,
+    object: Option<i64>,
+    predicate: String,
+}
+
 /// What one graph expansion produced, and everything the re-rank needs to know
 /// about how it got there.
 struct Walk {
     /// Facts of reached entities, best first.
     ranked: Vec<i64>,
+    /// Every entity the walk reached, whether or not its facts survived the
+    /// channel's own depth cut. Reaching something is what puts it in the
+    /// neighbourhood; ranking its facts is a separate question.
+    reached: Vec<i64>,
     /// Edge facts lying on the route to something the walk is reporting.
     roads: BTreeSet<i64>,
     /// The predicate of each crossed edge, so a question that asks for the
@@ -300,12 +453,60 @@ impl Brain {
         conn: &Connection,
         q: &RecallQuery,
         fused: &BTreeMap<i64, (f64, Vec<Channel>)>,
-    ) -> std::result::Result<Vec<i64>, BrainError> {
+    ) -> std::result::Result<Anchors, BrainError> {
         let named = graph::named_entities(conn, &normalized_terms(&q.text))?;
         if !named.is_empty() {
-            return Ok(named);
+            return Ok(Anchors {
+                ids: named,
+                from_question: true,
+            });
         }
-        seed_entities(conn, fused)
+        Ok(Anchors {
+            ids: seed_entities(conn, fused)?,
+            from_question: false,
+        })
+    }
+
+    /// Pushes down what the question did not ask for.
+    ///
+    /// Two independent rules, both multiplicative on the fused score and both
+    /// inert unless the question said something specific enough to apply them:
+    /// see [`OFF_TOPIC_DEMOTION`] and [`UNASKED_PREDICATE_DEMOTION`]. A fact can
+    /// take both, which is correct -- an unrelated entity's unrelated predicate
+    /// is wrong twice.
+    ///
+    /// Deliberately a re-rank of the fused set rather than a filter on it.
+    /// Nothing is removed, because every one of these signals is a guess about
+    /// intent, and a guess that can delete the answer is a guess with far too
+    /// much authority. The worst this can do is put the right fact second.
+    fn refocus(
+        &self,
+        conn: &Connection,
+        fused: &mut BTreeMap<i64, (f64, Vec<Channel>)>,
+        focus: &Focus,
+        terms: &[String],
+    ) -> std::result::Result<(), BrainError> {
+        let asked = named_predicates(conn, terms)?;
+        if fused.is_empty() || (asked.is_empty() && !focus.from_question) {
+            return Ok(());
+        }
+
+        let ids: Vec<i64> = fused.keys().copied().collect();
+        let shapes = fact_shapes(conn, &ids)?;
+        for (id, (score, _)) in fused.iter_mut() {
+            let Some(shape) = shapes.get(id) else {
+                continue;
+            };
+            let near = focus.entities.contains(&shape.entity)
+                || shape.object.is_some_and(|o| focus.entities.contains(&o));
+            if focus.from_question && !near {
+                *score *= OFF_TOPIC_DEMOTION;
+            }
+            if !asked.is_empty() && !asked.contains(&shape.predicate) {
+                *score *= UNASKED_PREDICATE_DEMOTION;
+            }
+        }
+        Ok(())
     }
 
     /// Expands outward from what the question names, and ranks what is out there.
@@ -339,13 +540,61 @@ impl Brain {
         });
         candidates.truncate(CHANNEL_DEPTH);
 
+        // Predicates are looked up for the *roads* rather than for every edge the
+        // walk crossed, because roads are the only edges anything asks about.
+        // That is also what bounds the query: `bridges` grows with the whole
+        // neighbourhood and, on a brain whose p99 degree sets a high hub cut, can
+        // pass more ids than SQLite will take parameters. Roads are bounded by the
+        // candidates they lead to.
+        let roads = n.roads_to(candidates.iter().map(|c| c.entity_id));
+
         Ok(Walk {
-            roads: n.roads_to(candidates.iter().map(|c| c.entity_id)),
-            bridge_predicates: graph::predicates(conn, n.bridges.iter().copied())?,
+            bridge_predicates: graph::predicates(conn, roads.iter().copied())?,
+            roads,
             ranked: candidates.iter().map(|c| c.fact_id).collect(),
+            reached: ids,
             asked,
         })
     }
+}
+
+/// The terms of a question that are predicate keys the brain already holds.
+fn named_predicates(
+    conn: &Connection,
+    terms: &[String],
+) -> std::result::Result<BTreeSet<String>, BrainError> {
+    if terms.is_empty() {
+        return Ok(BTreeSet::new());
+    }
+    let ph = vec!["?"; terms.len()].join(",");
+    let mut stmt = conn.prepare(&format!("SELECT key FROM predicate WHERE key IN ({ph})"))?;
+    let rows = stmt.query_map(params_from_iter(terms.iter()), |r| r.get(0))?;
+    Ok(rows.collect::<rusqlite::Result<BTreeSet<String>>>()?)
+}
+
+/// Subject, object and predicate of each of the given facts.
+fn fact_shapes(
+    conn: &Connection,
+    ids: &[i64],
+) -> std::result::Result<BTreeMap<i64, Shape>, BrainError> {
+    if ids.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+    let ph = vec!["?"; ids.len()].join(",");
+    let mut stmt = conn.prepare(&format!(
+        "SELECT id, entity_id, object_entity_id, predicate FROM fact WHERE id IN ({ph})"
+    ))?;
+    let rows = stmt.query_map(params_from_iter(ids.iter()), |r| {
+        Ok((
+            r.get::<_, i64>(0)?,
+            Shape {
+                entity: r.get(1)?,
+                object: r.get(2)?,
+                predicate: r.get(3)?,
+            },
+        ))
+    })?;
+    Ok(rows.collect::<rusqlite::Result<BTreeMap<i64, Shape>>>()?)
 }
 
 /// Facts of entities that merely resemble the anchors, best first.
@@ -356,11 +605,10 @@ impl Brain {
 /// should get the sibling's discount before the sibling's redemption count.
 fn kin_channel(
     conn: &Connection,
-    anchors: &[i64],
+    kin: &[crate::kin::Kin],
     filter: &TemporalFilter,
     terms: &[String],
 ) -> std::result::Result<Vec<i64>, BrainError> {
-    let kin = crate::kin::related(conn, anchors, filter)?;
     if kin.is_empty() {
         return Ok(Vec::new());
     }
@@ -428,6 +676,22 @@ impl Brain {
             return Ok(Vec::new());
         }
         let vector = self.embedder().embed_one(text)?;
+
+        // A text the embedder knows no token of comes back as a zero vector, and
+        // a zero vector has no direction, so it has no nearest neighbours either.
+        // Searching with it anyway does not give a weak answer, it gives a
+        // fabricated one: [`cosine_from_l2`] inverts a relation that holds only
+        // between unit-length vectors, and against a zero query every fact in the
+        // brain recovers the same fictitious 0.5 -- comfortably over
+        // [`MIN_SEMANTIC_COSINE`], which is why a query of three control
+        // characters used to come back with ten confident hits.
+        //
+        // The embedder normalizes, so the norm here is either 1 or exactly 0.
+        // There is nothing in between for this test to misjudge.
+        let norm: f32 = vector.iter().map(|x| x * x).sum();
+        if norm < 0.5 {
+            return Ok(Vec::new());
+        }
         let filter = VecFilter {
             open_only: matches!(q.when, When::Now),
             scope: q.scope.clone(),
@@ -637,7 +901,7 @@ fn alias_channel(
 /// fact through BM25 but does not *name* it -- identity stays exact even where
 /// search is forgiving.
 pub(crate) fn normalized_terms(text: &str) -> Vec<String> {
-    let words: Vec<&str> = text.split_whitespace().collect();
+    let words: Vec<&str> = text.split_whitespace().take(MAX_QUERY_WORDS).collect();
     let mut out = Vec::new();
     for (i, w) in words.iter().enumerate() {
         let single = norm::key(w);
@@ -666,6 +930,7 @@ fn fts_query(text: &str) -> Option<String> {
     let terms: Vec<String> = text
         .split(|c: char| !c.is_alphanumeric())
         .filter(|t| !t.is_empty())
+        .take(MAX_QUERY_WORDS)
         // Single characters carry almost no signal in Latin scripts and blow up
         // the candidate set. Non-ASCII single characters are kept: one CJK
         // character is a word.
