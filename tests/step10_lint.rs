@@ -242,6 +242,44 @@ fn two_entities_a_relation_already_joins_are_not_twins() {
     assert!(check(&b).twins.is_empty());
 }
 
+// --- the warning that never came ----------------------------------------------
+
+#[test]
+fn a_string_under_an_established_relation_is_warned_about() {
+    let tmp = TempDir::new().unwrap();
+    let b = brain(&tmp);
+
+    // Nobody has used `is_a` yet, so there is nothing to argue from.
+    assert!(
+        lint::missed_relation(b.store().conn(), "is_a")
+            .unwrap()
+            .is_none()
+    );
+
+    // Once one write establishes it as a relation, the next string one is
+    // almost certainly the mistake.
+    b.link("v2_pro", "is_a", "plano", None).unwrap();
+    let hint = lint::missed_relation(b.store().conn(), "is_a")
+        .unwrap()
+        .expect("a hint once the predicate reads as a relation");
+    assert!(hint.contains("is_a"), "{hint}");
+}
+
+#[test]
+fn an_ordinary_attribute_is_never_warned_about() {
+    let tmp = TempDir::new().unwrap();
+    let b = brain(&tmp);
+
+    text(&b, "api_gateway", "owner", "platform-team");
+    text(&b, "checkout", "owner", "payments-team");
+
+    assert!(
+        lint::missed_relation(b.store().conn(), "owner")
+            .unwrap()
+            .is_none()
+    );
+}
+
 // --- the whole report ----------------------------------------------------------
 
 #[test]

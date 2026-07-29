@@ -123,14 +123,24 @@ pub struct RememberParams {
     pub subject: String,
     /// The property being recorded, e.g. `preco`, `timeout`, `responsavel`.
     pub predicate: String,
-    /// The value, as text. A string that parses as a number is stored as one.
-    /// Provide this or `entity`, never both.
-    #[serde(default)]
-    pub value: Option<String>,
-    /// Use instead of `value` when the value is another entity: this records a
-    /// relation, and the graph can then be walked through it.
+    /// **Use this whenever the value names something you could ask another
+    /// question about** -- a class, an owner, a supplier, a service, a category.
+    /// It records a relation, which is the only kind of fact the graph can be
+    /// walked through, and it creates the named entity if it does not exist yet.
+    ///
+    /// `is_a`, `depends_on`, `owned_by`, `part_of` and anything like them always
+    /// belong here. Passing `cupao_stripe` as `value` instead stores a string
+    /// that no walk can follow: the fact reads back correctly and is invisible
+    /// to retrieval, and nothing will tell you.
     #[serde(default)]
     pub entity: Option<String>,
+    /// A literal: a number, a date, a flag, a short piece of prose. A string
+    /// that parses as a number is stored as one.
+    ///
+    /// Not for anything that names a thing -- use `entity` for that. Provide
+    /// this or `entity`, never both.
+    #[serde(default)]
+    pub value: Option<String>,
     /// Unit of a numeric value, e.g. `s`, `MB`, `BRL`.
     #[serde(default)]
     pub unit: Option<String>,
@@ -260,6 +270,11 @@ pub struct WriteResult {
     pub outcome: String,
     /// The fact as stored, including the `id` other tools take.
     pub fact: serde_json::Value,
+    /// Set when the write succeeded but probably did not mean what you wanted:
+    /// most often a relation recorded as a string, which stores fine and is
+    /// invisible to every walk of the graph. Null in the normal case. Read it --
+    /// nothing else will ever raise this, because nothing failed.
+    pub hint: Option<String>,
 }
 
 #[derive(serde::Serialize, schemars::JsonSchema)]
@@ -366,10 +381,24 @@ impl BrainServer {
         a.confidence = p.confidence;
         a.scope = p.scope.clone();
 
-        let outcome = self.with(|b| b.remember(&a))?;
+        // The hint is looked up only for a text-valued write, and only after it
+        // landed: the write is not in doubt, and a warning that could change the
+        // outcome would make this a validator rather than a memory.
+        let text_valued = p.entity.is_none();
+        let (outcome, hint) = self.with(|b| {
+            let outcome = b.remember(&a)?;
+            let hint = if text_valued {
+                crate::lint::missed_relation(b.store().conn(), &crate::norm::key(&p.predicate))?
+            } else {
+                None
+            };
+            Ok((outcome, hint))
+        })?;
+
         Ok(Json(WriteResult {
             outcome: outcome.kind().to_string(),
             fact: json!(outcome.fact()),
+            hint,
         }))
     }
 
@@ -387,6 +416,9 @@ impl BrainServer {
         Ok(Json(WriteResult {
             outcome: outcome.kind().to_string(),
             fact: json!(outcome.fact()),
+            // `link` is always a relation, so the mistake this warns about cannot
+            // be made here.
+            hint: None,
         }))
     }
 
@@ -577,7 +609,14 @@ impl ServerHandler for BrainServer {
                  -- a port, an owner, a price, a deadline -- call `recall`. Before \
                  writing about something that may already exist, call `entity` to \
                  check which spelling it is stored under. If a value changed, call \
-                 `remember`; only call `retract` when a claim was never true.",
+                 `remember`; only call `retract` when a claim was never true.\n\n\
+                 When a value names something you could ask another question about \
+                 -- a class, an owner, a supplier, a category -- pass it as \
+                 `entity`, not `value`. That records a relation, and relations are \
+                 the only thing the graph can be walked through: they are what lets \
+                 an answer be found near a question that never named it. Passing \
+                 such a value as `value` succeeds, reads back correctly, and is \
+                 invisible to retrieval forever.",
                 label = self.label,
                 id = self.id,
                 path = self.path,

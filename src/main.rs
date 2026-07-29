@@ -131,16 +131,32 @@ fn cmd_remember(args: &RememberArgs, cli: &Cli, ctx: &Ctx) -> anyhow::Result<()>
     let b = open(cli, ctx)?;
     let outcome = b.remember(&a)?;
 
+    // Looked up after the write, and only for a literal: the write is not in
+    // doubt. This is the warning that never came the 59 times a relation was
+    // recorded as a string, and nothing else will ever raise it, because nothing
+    // failed.
+    let hint = match args.entity {
+        Some(_) => None,
+        None => brain::lint::missed_relation(
+            b.store().conn(),
+            &brain::norm::key(&args.predicate),
+        )?,
+    };
+
     if cli.json {
         emit(&serde_json::to_string_pretty(&answer(
             &b,
             serde_json::json!({
                 "outcome": outcome.kind(),
                 "fact": outcome.fact(),
+                "hint": hint,
             }),
         ))?);
     } else {
         emit(&format!("{}: {}", outcome.kind(), outcome.fact().statement));
+        if let Some(h) = &hint {
+            emit(&format!("warning: {h}"));
+        }
     }
     Ok(())
 }

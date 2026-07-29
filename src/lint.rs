@@ -220,6 +220,35 @@ impl Report {
     }
 }
 
+/// Whether a text-valued write under this predicate looks like a missed relation.
+///
+/// The evidence is the brain's own history with the predicate: if somebody has
+/// already recorded `is_a` pointing at an entity, then `is_a` is a relation here,
+/// and the string that just landed is almost certainly the mistake. Deliberately
+/// evidence-based rather than a list of known relational words -- this core has
+/// no opinion about vocabulary in any language, and acquiring one to catch this
+/// would be a worse trade than missing the first occurrence.
+///
+/// Returns the sentence to hand back to the writer, or `None` when there is
+/// nothing to say. Called on the write path, so it is one indexed count.
+pub fn missed_relation(conn: &Connection, predicate: &str) -> Result<Option<String>, BrainError> {
+    let as_entity: i64 = conn.query_row(
+        "SELECT count(*) FROM fact
+          WHERE predicate = ? AND object_entity_id IS NOT NULL AND retracted_at IS NULL",
+        [predicate],
+        |r| r.get(0),
+    )?;
+    if as_entity == 0 {
+        return Ok(None);
+    }
+    Ok(Some(format!(
+        "`{predicate}` already points at an entity in {as_entity} other fact(s), so it \
+         reads as a relation here. This one stored a string, which no walk of the graph \
+         can follow -- if the value names a thing, write it with `entity` instead of \
+         `value`. Run `brain lint` to see the rest."
+    )))
+}
+
 /// Reads the brain and reports what is structurally wrong with it.
 pub fn check(conn: &Connection) -> Result<Report, BrainError> {
     Ok(Report {
