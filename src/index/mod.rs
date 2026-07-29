@@ -23,8 +23,7 @@ type Result<T> = std::result::Result<T, BrainError>;
 /// are the two places that decide what the stored `is_open` flag means. Two
 /// expressions that merely agree today would let a reindex silently change which
 /// facts the semantic channel can reach.
-const NOT_ENDED_AT: &str =
-    " AND f.retracted_at IS NULL AND (f.valid_to IS NULL OR f.valid_to > ?)";
+const NOT_ENDED_AT: &str = " AND f.retracted_at IS NULL AND (f.valid_to IS NULL OR f.valid_to > ?)";
 
 /// Restricts which facts may be returned. Mirrors the temporal filter the other
 /// channels apply, expressed in the terms `vec0` can actually index on.

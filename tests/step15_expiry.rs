@@ -195,7 +195,10 @@ fn an_end_never_outlives_the_fact_that_follows_it() {
         Some(ts("2026-09-01")),
         "the end was not clipped to where the next fact starts"
     );
-    assert_eq!(b.current("api", "timeout").unwrap().unwrap().number(), Some(30.0));
+    assert_eq!(
+        b.current("api", "timeout").unwrap().unwrap().number(),
+        Some(30.0)
+    );
 }
 
 #[test]
@@ -271,8 +274,10 @@ fn a_set_query_drops_a_fact_that_expired() {
                 .until(ts("2026-08-02")),
         )
         .unwrap();
-        b.remember(&Assertion::new("deploy", "state", Object::text("failing")).at(ts("2026-08-01")))
-            .unwrap();
+        b.remember(
+            &Assertion::new("deploy", "state", Object::text("failing")).at(ts("2026-08-01")),
+        )
+        .unwrap();
     }
 
     let q = WhichQuery::new("state").value(Object::text("failing"));
@@ -285,7 +290,10 @@ fn a_set_query_drops_a_fact_that_expired() {
             .collect()
     };
 
-    assert_eq!(subjects(&later(&tmp, "2026-08-01T12:00:00Z")), ["ci", "deploy"]);
+    assert_eq!(
+        subjects(&later(&tmp, "2026-08-01T12:00:00Z")),
+        ["ci", "deploy"]
+    );
     assert_eq!(
         subjects(&later(&tmp, "2026-08-03")),
         ["deploy"],
@@ -348,10 +356,8 @@ fn a_multi_valued_predicate_can_expire_one_value_at_a_time() {
                 .cardinality(brain::brain::Cardinality::Multi),
         )
         .unwrap();
-        b.remember(
-            &Assertion::new("oncall", "member", Object::text("joao")).at(ts("2026-08-01")),
-        )
-        .unwrap();
+        b.remember(&Assertion::new("oncall", "member", Object::text("joao")).at(ts("2026-08-01")))
+            .unwrap();
         assert_eq!(b.current_all("oncall", "member").unwrap().len(), 2);
     }
 

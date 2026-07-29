@@ -43,9 +43,13 @@ fn mixed(tmp: &TempDir) -> Brain {
     .unwrap();
     for i in 0..20 {
         b.remember(
-            &Assertion::new(format!("task_{i:02}"), "about", Object::text("deploy strategy"))
-                .at(ts("2026-02-01"))
-                .scope("todo"),
+            &Assertion::new(
+                format!("task_{i:02}"),
+                "about",
+                Object::text("deploy strategy"),
+            )
+            .at(ts("2026-02-01"))
+            .scope("todo"),
         )
         .unwrap();
     }
@@ -94,7 +98,9 @@ fn an_unscoped_fact_survives_an_exclusion() {
 
     let hits = statements(
         &b,
-        &RecallQuery::new("deploy strategy").limit(10).not_scope("todo"),
+        &RecallQuery::new("deploy strategy")
+            .limit(10)
+            .not_scope("todo"),
     );
     assert_eq!(hits.len(), 1, "unscoped facts were swept up: {hits:?}");
 }

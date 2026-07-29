@@ -148,7 +148,10 @@ fn snapshot_says_which_predicates_are_relational() {
             .unwrap_or_else(|| panic!("no predicate {k}"))
             .relational
     };
-    assert!(by("fornecido_por"), "an edge's predicate reads as a relation");
+    assert!(
+        by("fornecido_por"),
+        "an edge's predicate reads as a relation"
+    );
     assert!(!by("pais"), "a literal's predicate does not");
 }
 

@@ -57,8 +57,7 @@ fn run(ops: &[Op]) -> (Brain, Vec<brain::brain::Fact>) {
     for op in ops {
         match op {
             Op::Assert { value, at, days } => {
-                let mut a =
-                    Assertion::new("e", "p", Object::num(f64::from(*value))).at(day(*at));
+                let mut a = Assertion::new("e", "p", Object::num(f64::from(*value))).at(day(*at));
                 if let Some(d) = days {
                     a = a.until(day(at + d));
                 }

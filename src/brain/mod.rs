@@ -184,10 +184,7 @@ pub enum BrainError {
     InvalidConfidence(f64),
 
     #[error("a fact cannot stop being true before it starts: from {from}, until {until}")]
-    EmptyInterval {
-        from: Timestamp,
-        until: Timestamp,
-    },
+    EmptyInterval { from: Timestamp, until: Timestamp },
 
     #[error("{what} cannot be empty or punctuation-only (got {given:?})")]
     EmptyKey { what: &'static str, given: String },

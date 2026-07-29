@@ -42,10 +42,8 @@ fn brain(tmp: &TempDir) -> Brain {
 
 /// Records `subject predicate value` as a literal, at an explicit instant.
 fn say(b: &Brain, subject: &str, predicate: &str, value: &str, at: &str) {
-    b.remember(
-        &Assertion::new(subject, predicate, Object::parse_literal(value)).at(ts(at)),
-    )
-    .unwrap();
+    b.remember(&Assertion::new(subject, predicate, Object::parse_literal(value)).at(ts(at)))
+        .unwrap();
 }
 
 /// The subject keys of a set answer, which is what a list is actually read for.
@@ -71,7 +69,9 @@ fn every_match_is_returned_and_not_the_best_ten() {
         say(&b, &format!("task_{i:02}"), "status", "open", "2026-02-01");
     }
 
-    let set = b.which(&WhichQuery::new("status").value(Object::text("open"))).unwrap();
+    let set = b
+        .which(&WhichQuery::new("status").value(Object::text("open")))
+        .unwrap();
     assert_eq!(set.matched, 60);
     assert_eq!(set.facts.len(), 60, "the answer was truncated");
     assert!(!set.truncated);
@@ -88,7 +88,11 @@ fn a_cut_answer_says_how_much_it_cut() {
     }
 
     let set = b
-        .which(&WhichQuery::new("status").value(Object::text("open")).limit(5))
+        .which(
+            &WhichQuery::new("status")
+                .value(Object::text("open"))
+                .limit(5),
+        )
         .unwrap();
     assert_eq!(set.facts.len(), 5);
     assert_eq!(set.matched, 60, "the total was reported as the page size");
@@ -234,7 +238,8 @@ fn a_selection_does_not_blink_when_a_value_becomes_a_relation() {
     say(&b, "task_b", "status", "open", "2026-02-01");
     // The write that teaches the brain `status` is a relation. Everything after
     // it is promoted to an edge automatically.
-    b.link("task_c", "status", "open", Some(ts("2026-02-01"))).unwrap();
+    b.link("task_c", "status", "open", Some(ts("2026-02-01")))
+        .unwrap();
     say(&b, "task_d", "status", "open", "2026-02-01");
 
     assert_eq!(
@@ -255,12 +260,20 @@ fn an_entity_selection_follows_a_declared_alias() {
     // names of the same thing come along.
     let tmp = TempDir::new().unwrap();
     let b = brain(&tmp);
-    b.link("checkout", "owned_by", "platform_team", Some(ts("2026-02-01")))
-        .unwrap();
+    b.link(
+        "checkout",
+        "owned_by",
+        "platform_team",
+        Some(ts("2026-02-01")),
+    )
+    .unwrap();
     b.declare_alias("platform_team", "SRE").unwrap();
 
     assert_eq!(
-        subjects(&b, &WhichQuery::new("owned_by").value(Object::entity("SRE"))),
+        subjects(
+            &b,
+            &WhichQuery::new("owned_by").value(Object::entity("SRE"))
+        ),
         ["checkout"]
     );
 }
@@ -269,8 +282,13 @@ fn an_entity_selection_follows_a_declared_alias() {
 fn a_value_naming_nothing_the_brain_knows_is_an_empty_list() {
     let tmp = TempDir::new().unwrap();
     let b = brain(&tmp);
-    b.link("checkout", "owned_by", "platform_team", Some(ts("2026-02-01")))
-        .unwrap();
+    b.link(
+        "checkout",
+        "owned_by",
+        "platform_team",
+        Some(ts("2026-02-01")),
+    )
+    .unwrap();
 
     let set = b
         .which(&WhichQuery::new("owned_by").value(Object::entity("nobody_at_all")))
@@ -343,8 +361,13 @@ fn the_list_survives_where_the_graph_refuses_to_walk() {
     let tmp = TempDir::new().unwrap();
     let b = brain(&tmp);
     for i in 0..60 {
-        b.link(&format!("task_{i:02}"), "status", "open", Some(ts("2026-02-01")))
-            .unwrap();
+        b.link(
+            &format!("task_{i:02}"),
+            "status",
+            "open",
+            Some(ts("2026-02-01")),
+        )
+        .unwrap();
     }
 
     let walked = b.entity("open", When::Now, 2).unwrap().expect("entity");
