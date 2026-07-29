@@ -100,6 +100,16 @@ pub struct Assertion {
     pub object: Object,
     /// When this became true. Defaults to the clock's now.
     pub valid_from: Option<Timestamp>,
+    /// When this stops being true, if that is known in advance.
+    ///
+    /// The counterpart to `valid_from`, and the only way to write a `valid_to`
+    /// without a second fact arriving to close the first. A claim that carries its
+    /// own end -- a freeze that lifts on Friday, a token that expires in an hour --
+    /// stops being true on time instead of waiting for somebody to remember it.
+    ///
+    /// It narrows and never widens: a value that would extend past the fact
+    /// following it is clipped to where that one starts.
+    pub valid_to: Option<Timestamp>,
     pub source: Option<String>,
     pub locator: Option<serde_json::Value>,
     pub scope: Option<String>,
@@ -115,6 +125,7 @@ impl Assertion {
             predicate: predicate.into(),
             object,
             valid_from: None,
+            valid_to: None,
             source: None,
             locator: None,
             scope: None,
@@ -125,6 +136,11 @@ impl Assertion {
 
     pub fn at(mut self, t: Timestamp) -> Self {
         self.valid_from = Some(t);
+        self
+    }
+
+    pub fn until(mut self, t: Timestamp) -> Self {
+        self.valid_to = Some(t);
         self
     }
 

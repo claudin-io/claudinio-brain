@@ -149,6 +149,16 @@ pub struct RememberParams {
     /// into the timeline instead of looking like it just changed.
     #[serde(default)]
     pub at: Option<String>,
+    /// When this stops being true, if you already know. The fact closes itself
+    /// then, instead of waiting for someone to supersede it.
+    ///
+    /// This is what makes a short-lived claim safe to record: a freeze that lifts
+    /// on Friday, a token that expires in an hour, a state you will not be around
+    /// to correct. Reasserting with a later `until` pushes the end back, so a fact
+    /// can be kept alive by repetition. Without it, anything short-lived either
+    /// rots into a false answer or should not be written at all.
+    #[serde(default)]
+    pub until: Option<String>,
     /// Who or what is asserting this. Pass it; attribution is what makes a fact
     /// reviewable later.
     #[serde(default)]
@@ -415,9 +425,9 @@ impl BrainServer {
             }
         };
 
-        let at = parse_at(p.at.as_ref())?;
         let mut a = Assertion::new(&p.subject, &p.predicate, object);
-        a.valid_from = at;
+        a.valid_from = parse_at(p.at.as_ref())?;
+        a.valid_to = parse_at(p.until.as_ref())?;
         a.source = p.source.clone();
         a.locator = p.locator.clone();
         a.confidence = p.confidence;

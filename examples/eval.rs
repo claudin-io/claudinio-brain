@@ -249,11 +249,17 @@ fn run_suite(
     for case in cases {
         // A fresh brain per case: no cross-contamination, and the fact ids are
         // reproducible because both the clock and the id generator are seeded.
+        //
+        // The clock stands after every instant the suites write at and before the
+        // 2027 dates the future-dated cases use, which is a constraint and not a
+        // detail. "Now" is the instant the question is asked, so a clock before the
+        // data would leave every fact not yet true and every default query empty --
+        // the suites would go on measuring, and they would be measuring nothing.
         let dir = tempfile::TempDir::new()?;
         let b = Brain::init(
             &dir.path().join("e.db"),
             "eval",
-            Box::new(StepClock::new("2026-01-01T00:00:00Z".parse()?, 1000)),
+            Box::new(StepClock::new("2026-10-01T00:00:00Z".parse()?, 1000)),
             Box::new(SeededIdGen::new(1)),
         )?;
 

@@ -36,7 +36,10 @@ impl Fixture {
         let brain = Brain::init(
             &tmp.path().join("t.db"),
             "teste",
-            Box::new(StepClock::new(ts("2026-01-01T00:00:00Z"), 1000)),
+            // After every instant this file writes at: "now" is when the question
+            // is asked, so a clock before the data would leave every fact not yet
+            // true and every default recall empty.
+            Box::new(StepClock::new(ts("2026-08-01T00:00:00Z"), 1000)),
             Box::new(SeededIdGen::new(1)),
         )
         .unwrap();

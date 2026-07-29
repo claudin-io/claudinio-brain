@@ -17,12 +17,33 @@ use rusqlite::{Connection, params, params_from_iter};
 
 type Result<T> = std::result::Result<T, BrainError>;
 
+/// Whether a fact has not ended as of a bound instant.
+///
+/// One definition, shared by the fallback scan and by [`rebuild`], because these
+/// are the two places that decide what the stored `is_open` flag means. Two
+/// expressions that merely agree today would let a reindex silently change which
+/// facts the semantic channel can reach.
+const NOT_ENDED_AT: &str =
+    " AND f.retracted_at IS NULL AND (f.valid_to IS NULL OR f.valid_to > ?)";
+
 /// Restricts which facts may be returned. Mirrors the temporal filter the other
 /// channels apply, expressed in the terms `vec0` can actually index on.
+///
+/// Coarse on purpose. This is a candidate generator, not the temporal filter:
+/// every hit is re-checked against the facts afterwards (see
+/// [`crate::brain::Brain::recall`]'s semantic channel), so the only property
+/// required here is that nothing which *could* pass that check is excluded. The
+/// stored `is_open` flag is written when a fact is, which means a fact whose end
+/// has passed since then is still offered as a candidate and then dropped. That is
+/// the cheap direction to be wrong in; the expensive one would be a fact the
+/// semantic channel can never see.
 #[derive(Debug, Clone, Default)]
 pub struct VecFilter {
-    /// Only facts that currently hold.
+    /// Only facts that have not ended.
     pub open_only: bool,
+    /// The instant `open_only` is being asked about, when the caller knows it.
+    /// Lets the scan test expiry exactly instead of leaning on the stored flag.
+    pub now: Option<jiff::Timestamp>,
     pub scope: Option<String>,
 }
 
@@ -30,6 +51,14 @@ impl VecFilter {
     pub fn open() -> Self {
         Self {
             open_only: true,
+            ..Default::default()
+        }
+    }
+
+    pub fn open_at(now: jiff::Timestamp) -> Self {
+        Self {
+            open_only: true,
+            now: Some(now),
             ..Default::default()
         }
     }
@@ -118,7 +147,17 @@ impl VectorIndex for BruteForceIndex<'_> {
         );
         let mut binds: Vec<rusqlite::types::Value> = Vec::new();
         if filter.open_only {
-            sql.push_str(" AND f.valid_to IS NULL AND f.retracted_at IS NULL");
+            // The same rule [`store`] writes into the flag, so the fallback and
+            // the fast path admit the same facts -- including one that carries its
+            // own end and has not reached it. Without the `now`, expiry is not
+            // testable here and the flag's coarser reading stands.
+            match filter.now {
+                Some(t) => {
+                    sql.push_str(NOT_ENDED_AT);
+                    binds.push(t.as_microsecond().into());
+                }
+                None => sql.push_str(" AND f.valid_to IS NULL AND f.retracted_at IS NULL"),
+            }
         }
         if let Some(s) = &filter.scope {
             sql.push_str(" AND f.scope = ?");
@@ -211,18 +250,39 @@ pub fn mark_closed(conn: &Connection, fact_id: i64) -> Result<()> {
     Ok(())
 }
 
+/// Puts a fact back in reach of the semantic channel.
+///
+/// The inverse of [`mark_closed`], and it exists for one narrow case: a fact that
+/// had already ended when it was written, and whose end a later reassertion pushed
+/// back. Without this the fact is true and the only channel that could match a
+/// paraphrase of it cannot see it -- which is invisible, because every other
+/// channel still finds it.
+pub fn mark_open(conn: &Connection, fact_id: i64) -> Result<()> {
+    conn.execute(
+        "UPDATE fact_vec SET is_open = 1 WHERE fact_id = ?",
+        params![fact_id],
+    )?;
+    Ok(())
+}
+
 /// Rebuilds the whole `vec0` index from the stored embeddings. Returns how many
 /// rows were written.
-pub fn rebuild(conn: &Connection) -> Result<usize> {
+///
+/// `now` decides which facts count as still open, so a reindex has to be given the
+/// clock rather than reading one: this crate injects time everywhere, and an index
+/// that quietly consulted the wall clock would make `reindex` unrepeatable.
+pub fn rebuild(conn: &Connection, now: jiff::Timestamp) -> Result<usize> {
     conn.execute("DELETE FROM fact_vec", [])?;
     let rows: Vec<(i64, Vec<u8>, bool, Option<String>)> = conn
-        .prepare(
+        .prepare(&format!(
             "SELECT e.fact_id, e.embedding,
-                    (f.valid_to IS NULL AND f.retracted_at IS NULL), f.scope
+                    (1=1{NOT_ENDED_AT}), f.scope
              FROM fact_embedding e JOIN fact f ON f.id = e.fact_id
-             ORDER BY e.fact_id",
-        )?
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
+             ORDER BY e.fact_id"
+        ))?
+        .query_map([now.as_microsecond()], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+        })?
         .collect::<rusqlite::Result<_>>()?;
 
     let n = rows.len();

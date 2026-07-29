@@ -98,6 +98,7 @@ fn cmd_remember(args: &RememberArgs, cli: &Cli, ctx: &Ctx) -> anyhow::Result<()>
     // Parse everything the user supplied before touching the brain, so a bad date
     // or a malformed locator never reaches a transaction.
     let at = args.at.as_deref().map(parse_when).transpose()?;
+    let until = args.until.as_deref().map(parse_when).transpose()?;
     let locator = args
         .locator
         .as_deref()
@@ -116,6 +117,7 @@ fn cmd_remember(args: &RememberArgs, cli: &Cli, ctx: &Ctx) -> anyhow::Result<()>
 
     let mut a = Assertion::new(&args.subject, &args.predicate, object);
     a.valid_from = at;
+    a.valid_to = until;
     a.source = args.source.clone();
     a.locator = locator;
     a.confidence = args.confidence;
@@ -448,12 +450,24 @@ fn cmd_history(args: &GetArgs, cli: &Cli, ctx: &Ctx) -> anyhow::Result<()> {
         emit("(nothing known)");
     } else {
         for f in &facts {
-            let until = match (f.retracted_at, f.valid_to) {
-                (Some(_), _) => "retracted".to_string(),
-                (None, Some(to)) => format!("until {to}"),
-                (None, None) => "current".to_string(),
+            // Where the interval sits relative to now, which is the only thing a
+            // reader is deciding from. Two facts with an identical `valid_to` are
+            // not the same news depending on which side of now it falls on, and a
+            // fact whose validity has not started is not "current" however new it
+            // is -- printing it as such is what let `history` and `get` disagree.
+            let now = jiff::Timestamp::now();
+            let state = if f.retracted_at.is_some() {
+                "retracted".to_string()
+            } else if f.valid_from > now {
+                "not yet true".to_string()
+            } else {
+                match f.valid_to {
+                    Some(to) if to <= now => format!("until {to}"),
+                    Some(to) => format!("expires {to}"),
+                    None => "current".to_string(),
+                }
             };
-            emit(&format!("[{}] {}  ({until})", f.valid_from, f.statement));
+            emit(&format!("[{}] {}  ({state})", f.valid_from, f.statement));
         }
     }
     Ok(())

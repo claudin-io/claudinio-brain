@@ -145,6 +145,12 @@ pub struct RememberArgs {
     #[arg(long, value_name = "WHEN")]
     pub at: Option<String>,
 
+    /// When this stops being true, if that is already known. The fact closes
+    /// itself at that instant instead of waiting for somebody to come back and
+    /// supersede it -- which is what makes a short-lived claim safe to record.
+    #[arg(long, value_name = "WHEN")]
+    pub until: Option<String>,
+
     #[arg(long)]
     pub source: Option<String>,
 

@@ -39,7 +39,14 @@ impl Fixture {
             "teste",
             // 1s per read: successive writes get distinct, ordered recorded_at
             // without sleeping or depending on wall-clock resolution.
-            Box::new(StepClock::new(ts("2026-01-01T00:00:00Z"), 1000)),
+            //
+            // Set *after* every instant these tests write at, and that is
+            // load-bearing rather than cosmetic: "now" means the instant the
+            // question is asked, so a clock sitting before the data would make
+            // every fact in this file a future one and `current` would answer
+            // nothing. The single deliberate exception is the 2027 price in
+            // `a_future_dated_fact_does_not_become_current_until_its_time`.
+            Box::new(StepClock::new(ts("2026-08-01T00:00:00Z"), 1000)),
             Box::new(SeededIdGen::new(1)),
         )
         .unwrap();
@@ -254,6 +261,16 @@ fn a_future_dated_fact_does_not_become_current_until_its_time() {
 
     assert_eq!(f.price_at("2026-08-01"), Some(10.0));
     assert_eq!(f.price_at("2027-06-01"), Some(99.0));
+
+    // The assertion this test was named for and did not make. `current` used to
+    // mean "the latest fact nobody has closed", which is the 2027 one -- so the
+    // brain answered "what does it cost" with a price that does not apply yet,
+    // while `as_of(today)` answered correctly. Now they are the same question.
+    assert_eq!(
+        f.current_price(),
+        Some(10.0),
+        "an announced price is not today's price"
+    );
 }
 
 #[test]

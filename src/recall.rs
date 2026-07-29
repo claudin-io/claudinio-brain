@@ -282,7 +282,10 @@ impl Brain {
     /// Retrieves facts relevant to a question.
     pub fn recall(&self, q: &RecallQuery) -> std::result::Result<Vec<Hit>, BrainError> {
         let conn = self.store().conn();
-        let filter = TemporalFilter::new(q);
+        // Read once, so every channel answering this question answers it about the
+        // same instant. Two clock reads inside one query would be two questions.
+        let now = self.now();
+        let filter = TemporalFilter::new(q, now);
 
         // Rank per channel, then fuse. `fused` maps fact id -> (rrf score,
         // channels), in a BTreeMap so iteration order never varies by run.
@@ -291,7 +294,7 @@ impl Brain {
             let ids = match channel {
                 Channel::Bm25 => bm25_channel(conn, &q.text, &filter)?,
                 Channel::Alias => alias_channel(conn, &q.text, &filter)?,
-                Channel::Semantic => self.semantic_channel(&q.text, q)?,
+                Channel::Semantic => self.semantic_channel(&q.text, q, now)?,
                 Channel::Graph | Channel::Kin => {
                     unreachable!("expansion channels expand, they do not retrieve")
                 }
@@ -671,6 +674,7 @@ impl Brain {
         &self,
         text: &str,
         q: &RecallQuery,
+        now: Timestamp,
     ) -> std::result::Result<Vec<i64>, BrainError> {
         if text.trim().is_empty() {
             return Ok(Vec::new());
@@ -692,8 +696,13 @@ impl Brain {
         if norm < 0.5 {
             return Ok(Vec::new());
         }
+        // Keyed on what the caller *asked for*, not on the instant that resolved
+        // to. `Now` is `AsOf(now)` everywhere else, but only a now-question can use
+        // the stored open flag to narrow the search, and collapsing the two here
+        // would quietly turn every default query into the over-fetching path.
         let filter = VecFilter {
             open_only: matches!(q.when, When::Now),
+            now: Some(now),
             scope: q.scope.clone(),
         };
 
@@ -714,7 +723,11 @@ impl Brain {
             }
             let f = self.fact(id)?;
             let keep = match q.when {
-                When::Now => f.is_open(),
+                // `covers`, not `is_open`: the flag the index narrowed on says a
+                // fact was not over when it was written, which is not the same as
+                // being true now. This is the re-check that makes the coarse
+                // prefilter safe.
+                When::Now => f.covers(now),
                 When::AsOf(t) => f.covers(t),
                 When::History => f.retracted_at.is_none(),
             };
@@ -753,19 +766,28 @@ pub(crate) struct TemporalFilter {
 }
 
 impl TemporalFilter {
-    pub(crate) fn new(q: &RecallQuery) -> Self {
-        Self::for_when(q.when, q.scope.clone())
+    pub(crate) fn new(q: &RecallQuery, now: Timestamp) -> Self {
+        Self::for_when(q.when, now, q.scope.clone())
     }
 
-    pub(crate) fn for_when(when: When, scope: Option<String>) -> Self {
+    /// `now` is what [`When::Now`] resolves to.
+    ///
+    /// Taken as a parameter rather than read from a clock so that "now" is decided
+    /// once per question, by the caller that has the clock, and so that every
+    /// channel filtering one question filters it against the same instant. It also
+    /// leaves `Now` with nothing of its own to mean: it *is* `AsOf(now)`, and the
+    /// two cannot drift apart because there is only one arm.
+    pub(crate) fn for_when(when: When, now: Timestamp, scope: Option<String>) -> Self {
         // A retracted fact is excluded in every mode, including History.
         let mut sql = String::from(" AND f.retracted_at IS NULL");
         let mut at = None;
         match when {
-            When::Now => sql.push_str(" AND f.valid_to IS NULL"),
-            When::AsOf(t) => {
+            When::Now | When::AsOf(_) => {
                 sql.push_str(" AND f.valid_from <= ?a AND (f.valid_to IS NULL OR ?a < f.valid_to)");
-                at = Some(t.as_microsecond());
+                at = Some(match when {
+                    When::AsOf(t) => t.as_microsecond(),
+                    _ => now.as_microsecond(),
+                });
             }
             When::History => {}
         }

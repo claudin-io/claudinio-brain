@@ -22,8 +22,12 @@ fn day(n: u16) -> Timestamp {
 /// One write against a single (entity, predicate) pair.
 #[derive(Debug, Clone)]
 enum Op {
-    /// Assert `value` valid from day `at`.
-    Assert { value: u8, at: u16 },
+    /// Assert `value` valid from day `at`, for `days` if it carries its own end.
+    Assert {
+        value: u8,
+        at: u16,
+        days: Option<u16>,
+    },
     /// Retract whichever fact is the nth in history, if there is one.
     Retract { nth: usize },
 }
@@ -31,7 +35,10 @@ enum Op {
 fn op_strategy() -> impl Strategy<Value = Op> {
     prop_oneof![
         // Weighted towards asserts: a history of only retractions proves little.
-        8 => (0u8..5, 0u16..40).prop_map(|(value, at)| Op::Assert { value, at }),
+        // Some carry their own end, which is the shape that puts a closed interval
+        // in the middle of the timeline without a second fact having arrived.
+        8 => (0u8..5, 0u16..40, prop::option::of(1u16..10))
+            .prop_map(|(value, at, days)| Op::Assert { value, at, days }),
         1 => (0usize..8).prop_map(|nth| Op::Retract { nth }),
     ]
 }
@@ -49,9 +56,13 @@ fn run(ops: &[Op]) -> (Brain, Vec<brain::brain::Fact>) {
 
     for op in ops {
         match op {
-            Op::Assert { value, at } => {
-                b.remember(&Assertion::new("e", "p", Object::num(f64::from(*value))).at(day(*at)))
-                    .unwrap();
+            Op::Assert { value, at, days } => {
+                let mut a =
+                    Assertion::new("e", "p", Object::num(f64::from(*value))).at(day(*at));
+                if let Some(d) = days {
+                    a = a.until(day(at + d));
+                }
+                b.remember(&a).unwrap();
             }
             Op::Retract { nth } => {
                 let h = b.history("e", "p").unwrap();
@@ -83,6 +94,30 @@ proptest! {
             .filter(|f| f.valid_to.is_none() && f.retracted_at.is_none())
             .count();
         prop_assert!(open <= 1, "{open} facts were open at once: {history:#?}");
+    }
+
+    /// The invariant the one above is usually standing in for, stated directly.
+    ///
+    /// Counting open-ended facts is a proxy for "only one thing is true at a
+    /// time", and it stopped being a faithful one when a fact could carry its own
+    /// end: such a fact has a `valid_to` from birth, so it is not "open" and the
+    /// count above ignores it entirely. Since the partial unique index keys on
+    /// `valid_to IS NULL` too, the database is not watching these either -- which
+    /// leaves the placement logic as the only thing standing between a bounded
+    /// fact and an overlap, and that is exactly the situation a property test is
+    /// for.
+    #[test]
+    fn at_most_one_fact_covers_any_instant(ops in prop::collection::vec(op_strategy(), 1..12)) {
+        let (_b, history) = run(&ops);
+        for d in 0..50u16 {
+            let t = day(d);
+            let covering: Vec<_> = history.iter().filter(|f| f.covers(t)).collect();
+            prop_assert!(
+                covering.len() <= 1,
+                "{} facts were true at {t}: {covering:#?}",
+                covering.len()
+            );
+        }
     }
 
     #[test]
