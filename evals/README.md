@@ -170,6 +170,13 @@ holdout      all             24   0.931   1.000    1.000   0.958  1.000
 **`--misses` is empty.** Every visible suite reaches 1.000 top-1, including the
 two cases earlier sections of this file carried as permanently wrong.
 
+That is worth reading as a warning as much as a result. A suite at 1.000 has
+stopped being able to tell you anything: the next ranking change cannot improve
+it, only break it, and "no regression" is a much weaker thing to hear from a
+ceiling than from a slope. R@1 and MRR still have room (0.931 and 0.958 on the
+holdout), and those are the columns to watch now. The next ranking change should
+arrive with the cases that can judge it.
+
 Ten cases were added to the visible suites in the same step, so the suites are
 harder than the Passo 7 numbers they replace, not just better scored. Six cases
 were failing after they landed — three of each shape — and all six flipped.
