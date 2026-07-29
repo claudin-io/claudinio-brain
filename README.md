@@ -87,6 +87,42 @@ reopen whatever the retracted fact closed. "This was wrong" leaves that period
 genuinely unknown, and inventing an answer for it would be worse than admitting
 the gap.
 
+## A fact can carry its own end
+
+`valid_to` used to be something only a *second* fact could write: you ended a
+claim by superseding it. That quietly decided what the brain was for, because
+anything whose end was known in advance — a freeze that lifts on Friday, a token
+good for an hour, a state nobody will come back to correct — had to be revisited
+by hand or left out entirely.
+
+```console
+$ brain remember --subject release_1_4 --predicate freeze --value on --until 2026-08-15
+created: release_1_4 freeze on
+
+$ brain get release_1_4 freeze                      # before the 15th
+release_1_4 freeze on
+
+$ brain get release_1_4 freeze                      # after it, nothing written in between
+(nothing known)
+
+$ brain history release_1_4 freeze
+[2026-08-01T00:00:00Z] release_1_4 freeze on  (until 2026-08-15T00:00:00Z)
+```
+
+Nobody wrote anything and the answer changed. Reasserting with a *later*
+`--until` pushes the end back, so a short-lived fact stays alive by repetition
+instead of being rewritten; an earlier one is ignored, so a heartbeat can never
+kill the thing it was sent to keep alive. And an end that would run past the
+claim following it is clipped to where that one starts — `--until` narrows and
+never widens, because two facts covering one instant is the single thing this
+timeline exists to prevent.
+
+**"Now" means now.** The value that holds is the one whose interval contains this
+instant, which is exactly `--as-of` against the clock. A price announced for
+January is the newest thing the brain knows and is not today's price; a freeze
+that lifted on Friday is still the newest thing it knows on Saturday. Both used
+to read as current.
+
 ## Relations are facts
 
 `link A rel B` is a fact whose object is an entity, so the graph inherits
@@ -138,6 +174,58 @@ The semantic channel is a **static embedding** table — a token-to-vector looku
 not a transformer. No ONNX runtime, no download, no C++ toolchain, and no
 sampling, which is what makes recall reproducible enough for the eval baselines
 to exist at all.
+
+## Asking about a set
+
+`get` needs a subject and `recall` guesses at one, so neither can answer *which
+things* — which services a team owns, what is still open, what has no source.
+That is a different shape of question, not a harder version of the same one, and
+no amount of ranking produces it.
+
+```console
+$ brain which status open
+fix_login status open
+write_docs status open
+
+$ brain which due --order-by value          # ISO-8601 sorts chronologically
+write_docs due 2026-03-09
+fix_login due 2026-08-15
+
+$ brain which owner --entity platform-team  # by identity, so other names come along
+checkout_service owner platform-team
+```
+
+What separates this from `recall` is not the phrasing, it is what the answer
+promises. `recall` ranks, returns the best few, and has no way to tell you what it
+left out. `which` returns everything that matches and reports `matched` beside it,
+so an agent can tell *these are the open tasks* from *these are ten of the open
+tasks* and act on the set as a set. Select the way you wrote it: `--value` for a
+literal, `--entity` to match by identity.
+
+### Things that churn
+
+A set query and a self-closing fact are between them enough to keep a task list
+in a brain, which the old advice said not to do. That advice was aimed at the
+wrong thing: a task that reaches `done` is not transient, it is a closed interval
+with a duration, an owner and a reason — the part a checkbox throws away. What was
+missing was a way to read the list back.
+
+```console
+$ brain remember --subject fix_login --predicate status --value open --scope todo
+$ brain which status open --scope todo
+$ brain recall "how do we authenticate" --not-scope todo
+```
+
+Nothing is ever deleted here, and every fact lands in the same two indexes that
+every question is searched through, so a scope is how high-churn work is kept from
+competing with the durable knowledge forever. `--not-scope` is the half that was
+missing: `--scope` could only ever narrow inward.
+
+One trap worth naming. `brain lint` will notice that several tasks share
+`status open` and suggest promoting `open` to a node so things can be reached
+through it. Don't: traversal deliberately refuses to expand *through* a
+high-degree hub, so the graph answer works up to about fifty tasks and then
+silently returns nothing at all. That is the failure `which` exists to replace.
 
 ## Names
 
@@ -253,13 +341,18 @@ remember   Record a fact
 link       Record a relation between two entities
 get        Read the current value, or the value at a past instant
 recall     Search the brain with a natural-language question
+which      List which subjects hold a predicate, and what the value is
 history    Show the full trajectory of a subject/predicate pair
 entity     Show what is known about an entity, and what it connects to
 why        Show where a fact came from and what became of it
 retract    Mark a fact as never having been true
 alias      Give an entity another name, list the names it has, or take one away
+lint       Report what is structurally wrong: relations stored as strings,
+           entities nothing can reach, one thing living under two names
+repair     Fix how facts are stored, without changing what they say
 reindex    Rebuild the vector index from the stored embeddings
-predicate  Fix a predicate's cardinality
+predicate  Fix what a predicate is: how many values it holds at once, and
+           whether its object names a thing rather than being a literal
 studio     Open the brain in a 3D viewer and editor, served from localhost
 export     Write the brain to a single self-contained HTML file
 ```
@@ -284,10 +377,12 @@ brain export        # the same page as one HTML file, read-only, works offline
 
 A node is an entity. An edge is a fact whose object is another entity — so edges
 carry both time axes like everything else does. An edge that **ended** is drawn
-as a dashed ghost rather than deleted, and one that was **retracted** is hidden
-unless you ask, because it was never true.
+as a dashed ghost rather than deleted, one that is **expiring** carries its own
+end and is still the answer until it arrives, one **not yet true** is dated ahead
+and kept in view anyway, and one that was **retracted** is hidden unless you ask,
+because it was never true.
 
-Four parts do the work:
+Five parts do the work:
 
 **The valid-time ruler.** Drag it and the graph re-forms into whatever was true
 at that instant; relations appear and vanish under the cursor. It is `--as-of` as
@@ -311,6 +406,13 @@ channels agree on is drawn in their average — which is the agreement RRF rewar
 made visible. In the screenshot above, "de que pais vem o bourbon amarelo" is
 answered by `Fazenda Serra Azul pais Brasil`, and the `graph` chip on it is the
 walk that got there: the country is one hop past the entity the question named.
+
+**The set query.** Click a predicate in the rail and every subject holding it is
+selected, in the graph and as a list. This is the one question a graph cannot be
+read for — a node shows what it holds, and nothing shows which nodes hold a given
+thing — so it was as invisible here as it was unaskable at the CLI. The list says
+"all of them", which is the property that separates it from the recall trace above
+it.
 
 **The editor.** In `brain studio` only. Recording a value does not overwrite the
 old one and you watch the interval close as a new one opens, so the model teaches
