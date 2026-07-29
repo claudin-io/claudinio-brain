@@ -8,6 +8,12 @@
 //! Run with `cargo run --bin eval`. Regressions against `evals/baseline.json`
 //! fail the run, so improving a number means updating the baseline in the same
 //! commit -- the number becomes part of the diff and gets reviewed.
+//!
+//! `--holdout` adds a suite nothing is tuned against. It is scored the same way
+//! and gated the same way, but its cases are never named: `--misses` reports the
+//! visible suites only. That asymmetry is the entire point -- a case you can see
+//! is a case you can adjust a constant until it passes, and a suite that has had
+//! that done to it has stopped being evidence.
 
 use brain::brain::{Assertion, Brain, Object};
 use brain::clock::StepClock;
@@ -78,6 +84,7 @@ fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let update = args.iter().any(|a| a == "--update-baseline");
     let show_misses = args.iter().any(|a| a == "--misses");
+    let holdout = args.iter().any(|a| a == "--holdout");
 
     let suites = ["retrieval", "temporal", "graph", "alias", "kin"];
     let ablations: Vec<(&str, Vec<Channel>)> = vec![
@@ -113,23 +120,8 @@ fn main() -> anyhow::Result<()> {
         ("all", Channel::ALL.to_vec()),
     ];
 
-    let mut results: BTreeMap<String, BTreeMap<String, Metrics>> = BTreeMap::new();
     let mut misses: Vec<String> = Vec::new();
-    for suite in suites {
-        let cases = load_suite(suite)?;
-        if cases.is_empty() {
-            continue;
-        }
-        let mut per_channel = BTreeMap::new();
-        for (label, channels) in &ablations {
-            // Only the full configuration reports its misses: those are the cases
-            // that are actually still wrong, as opposed to wrong on purpose
-            // because a channel was switched off.
-            let mut into = (*label == "all" && show_misses).then_some(&mut misses);
-            per_channel.insert(label.to_string(), run_suite(&cases, channels, &mut into)?);
-        }
-        results.insert(suite.to_string(), per_channel);
-    }
+    let results = score(&suites, &ablations, show_misses.then_some(&mut misses))?;
 
     print_table(&results);
     if show_misses {
@@ -142,36 +134,87 @@ fn main() -> anyhow::Result<()> {
         }
     }
 
-    let baseline_path = std::path::Path::new("evals/baseline.json");
-    if update {
-        std::fs::write(
-            baseline_path,
-            serde_json::to_string_pretty(&results)? + "\n",
-        )?;
-        println!("\nbaseline updated: {}", baseline_path.display());
-        return Ok(());
+    // `None` for the miss list, always: see the module comment. The holdout is
+    // scored, gated and reported in aggregate, and never named.
+    let held = holdout
+        .then(|| score(&["holdout"], &ablations, None))
+        .transpose()?;
+    if let Some(h) = &held {
+        println!("\nholdout -- nothing here is tuned against:");
+        print_table(h);
     }
 
-    match std::fs::read_to_string(baseline_path) {
-        Ok(text) => {
-            let baseline: BTreeMap<String, BTreeMap<String, Metrics>> =
-                serde_json::from_str(&text)?;
-            let regressions = compare(&baseline, &results);
-            if regressions.is_empty() {
-                println!("\nno regressions against the baseline.");
-            } else {
-                eprintln!("\nREGRESSIONS:");
-                for r in &regressions {
-                    eprintln!("  {r}");
-                }
-                anyhow::bail!("{} metric(s) regressed", regressions.len());
-            }
-        }
-        Err(_) => {
-            println!("\nno baseline yet -- run with --update-baseline to record one.");
-        }
+    let mut failed = 0;
+    for (results, path) in [
+        (Some(&results), "evals/baseline.json"),
+        (held.as_ref(), "evals/holdout.json"),
+    ] {
+        let Some(results) = results else { continue };
+        failed += gate(results, std::path::Path::new(path), update)?;
+    }
+    if failed > 0 {
+        anyhow::bail!("{failed} metric(s) regressed");
     }
     Ok(())
+}
+
+/// Scores each named suite against every channel configuration.
+fn score(
+    suites: &[&str],
+    ablations: &[(&str, Vec<Channel>)],
+    mut misses: Option<&mut Vec<String>>,
+) -> anyhow::Result<BTreeMap<String, BTreeMap<String, Metrics>>> {
+    let mut results = BTreeMap::new();
+    for suite in suites {
+        let cases = load_suite(suite)?;
+        if cases.is_empty() {
+            continue;
+        }
+        let mut per_channel = BTreeMap::new();
+        for (label, channels) in ablations {
+            // Only the full configuration reports its misses: those are the cases
+            // that are actually still wrong, as opposed to wrong on purpose
+            // because a channel was switched off.
+            let mut into = match (*label == "all", misses.as_deref_mut()) {
+                (true, Some(m)) => Some(m),
+                _ => None,
+            };
+            per_channel.insert(label.to_string(), run_suite(&cases, channels, &mut into)?);
+        }
+        results.insert(suite.to_string(), per_channel);
+    }
+    Ok(results)
+}
+
+/// Compares one set of results against its committed baseline, or records it.
+///
+/// Returns how many metrics regressed, rather than failing on the spot, so a run
+/// scoring both files reports every drop instead of only the first file's.
+fn gate(
+    results: &BTreeMap<String, BTreeMap<String, Metrics>>,
+    path: &std::path::Path,
+    update: bool,
+) -> anyhow::Result<usize> {
+    if update {
+        std::fs::write(path, serde_json::to_string_pretty(results)? + "\n")?;
+        println!("baseline updated: {}", path.display());
+        return Ok(0);
+    }
+    let Ok(text) = std::fs::read_to_string(path) else {
+        println!("no baseline at {} -- run with --update-baseline.", path.display());
+        return Ok(0);
+    };
+    let baseline: BTreeMap<String, BTreeMap<String, Metrics>> = serde_json::from_str(&text)?;
+    let regressions = compare(&baseline, results);
+    if regressions.is_empty() {
+        println!("no regressions against {}.", path.display());
+    } else {
+        eprintln!("\nREGRESSIONS against {}:", path.display());
+        for r in &regressions {
+            eprintln!("  {r}");
+        }
+    }
+    Ok(regressions.len())
 }
 
 fn load_suite(name: &str) -> anyhow::Result<Vec<EvalCase>> {

@@ -1,0 +1,68 @@
+{
+  "holdout": {
+    "alias": {
+      "cases": 24,
+      "recall@1": 0.556,
+      "recall@5": 0.604,
+      "recall@10": 0.604,
+      "mrr": 0.583,
+      "top1_accuracy": 0.625
+    },
+    "all": {
+      "cases": 24,
+      "recall@1": 0.889,
+      "recall@5": 1.0,
+      "recall@10": 1.0,
+      "mrr": 0.931,
+      "top1_accuracy": 0.958
+    },
+    "bm25": {
+      "cases": 24,
+      "recall@1": 0.681,
+      "recall@5": 0.958,
+      "recall@10": 0.958,
+      "mrr": 0.788,
+      "top1_accuracy": 0.75
+    },
+    "bm25+alias": {
+      "cases": 24,
+      "recall@1": 0.639,
+      "recall@5": 0.958,
+      "recall@10": 0.958,
+      "mrr": 0.757,
+      "top1_accuracy": 0.708
+    },
+    "kin": {
+      "cases": 24,
+      "recall@1": 0.083,
+      "recall@5": 0.104,
+      "recall@10": 0.104,
+      "mrr": 0.063,
+      "top1_accuracy": 0.083
+    },
+    "no-graph": {
+      "cases": 24,
+      "recall@1": 0.681,
+      "recall@5": 1.0,
+      "recall@10": 1.0,
+      "mrr": 0.797,
+      "top1_accuracy": 0.75
+    },
+    "no-kin": {
+      "cases": 24,
+      "recall@1": 0.847,
+      "recall@5": 1.0,
+      "recall@10": 1.0,
+      "mrr": 0.91,
+      "top1_accuracy": 0.917
+    },
+    "semantic": {
+      "cases": 24,
+      "recall@1": 0.597,
+      "recall@5": 0.958,
+      "recall@10": 1.0,
+      "mrr": 0.741,
+      "top1_accuracy": 0.667
+    }
+  }
+}
