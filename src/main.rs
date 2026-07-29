@@ -251,8 +251,8 @@ fn cmd_recall(args: &RecallArgs, cli: &Cli, ctx: &Ctx) -> anyhow::Result<()> {
 fn cmd_which(args: &brain::cli::WhichArgs, cli: &Cli, ctx: &Ctx) -> anyhow::Result<()> {
     let mut q = WhichQuery::new(&args.predicate)
         .order(args.order)
+        .desc(args.desc)
         .limit(args.limit);
-    q.desc = args.desc;
     if let Some(v) = &args.value {
         q = q.value(Object::parse_literal(v));
     }

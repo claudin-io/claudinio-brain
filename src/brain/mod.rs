@@ -89,6 +89,11 @@ impl WhichQuery {
         self
     }
 
+    pub fn desc(mut self, yes: bool) -> Self {
+        self.desc = yes;
+        self
+    }
+
     pub fn limit(mut self, n: usize) -> Self {
         self.limit = n;
         self

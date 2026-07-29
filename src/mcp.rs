@@ -545,8 +545,9 @@ impl BrainServer {
         &self,
         Parameters(p): Parameters<WhichParams>,
     ) -> Result<Json<WhichResult>, ErrorData> {
-        let mut q = WhichQuery::new(&p.predicate).limit(p.limit.unwrap_or(200));
-        q.desc = p.desc;
+        let mut q = WhichQuery::new(&p.predicate)
+            .desc(p.desc)
+            .limit(p.limit.unwrap_or(200));
         match (&p.value, &p.entity) {
             (Some(_), Some(_)) => {
                 return Err(ErrorData::invalid_params(

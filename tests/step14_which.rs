@@ -312,9 +312,10 @@ fn ordering_by_value_puts_the_nearest_deadline_first() {
     let by_due = WhichQuery::new("due").order(Order::Value);
     assert_eq!(subjects(&b, &by_due), ["task_c", "task_b", "task_a"]);
 
-    let mut latest = by_due;
-    latest.desc = true;
-    assert_eq!(subjects(&b, &latest), ["task_a", "task_b", "task_c"]);
+    assert_eq!(
+        subjects(&b, &by_due.desc(true)),
+        ["task_a", "task_b", "task_c"]
+    );
 }
 
 #[test]
