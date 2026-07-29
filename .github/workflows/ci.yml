@@ -162,6 +162,11 @@ jobs:
   eval:
     # Recall quality, gated on evals/baseline.json. Improving a number means
     # updating the baseline in the same commit, so it lands in the diff.
+    #
+    # `--holdout` adds the suite nothing is tuned against, gated on its own
+    # baseline. It runs here rather than only before a release because the whole
+    # point of it is to disagree with the visible numbers, and a check that only
+    # runs at release time finds that out too late to act on.
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
@@ -169,7 +174,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo run --release --example eval
+      - run: cargo run --release --example eval -- --holdout
 
   msrv:
     needs: changes

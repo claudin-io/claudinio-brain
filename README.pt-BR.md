@@ -397,6 +397,7 @@ invariante bitemporal e ainda ser inútil se o recall nunca trouxer a resposta.
 ```bash
 cargo run --example eval                      # mede e falha em regressão
 cargo run --example eval -- --misses          # ...e nomeia os casos ainda errados
+cargo run --example eval -- --holdout         # ...e pontua o que ninguém ajustou
 ```
 
 Cinco suítes — retrieval, temporal, graph, alias, kin — cada uma pontuada contra
@@ -404,6 +405,12 @@ cada canal isolado e fundido, para que a contribuição marginal de um canal sej
 um número e não uma opinião. `evals/baseline.json` é versionado e o CI falha em
 regressão, o que significa que melhorar um número exige atualizar a baseline no
 mesmo commit, onde ela entra no diff e é revisada.
+
+Uma sexta suíte, `holdout.jsonl`, é o controle. É pontuada e barrada como as
+outras, mas **nunca nomeia um caso que falhou**, porque um caso que você enxerga
+é um caso em que dá para mexer numa constante até ele passar. Tudo o que as
+suítes visíveis afirmam sobre uma mudança de ranking vale exatamente o que o
+holdout disser sobre a mesma mudança.
 
 [evals/README.md](evals/README.md) explica como ler a tabela de ablação, e tem
 uma seção sobre o que essas suítes **não** conseguem medir.
