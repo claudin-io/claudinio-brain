@@ -233,9 +233,7 @@ fn migrate(conn: &Connection, from: i64) -> Result<()> {
         // default; existing rows take 0, which is the conservative reading --
         // every predicate an old brain holds keeps storing objects exactly as it
         // did until somebody says otherwise.
-        tx.execute_batch(
-            "ALTER TABLE predicate ADD COLUMN relational INTEGER NOT NULL DEFAULT 0",
-        )?;
+        tx.execute_batch("ALTER TABLE predicate ADD COLUMN relational INTEGER NOT NULL DEFAULT 0")?;
     }
 
     tx.execute(

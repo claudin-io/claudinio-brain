@@ -87,8 +87,10 @@ fn the_cohort_survives_the_class_becoming_a_real_edge() {
     // An entity object keeps its label in `object_text`, which is what lets a
     // cohort keep working across the moment somebody links it properly. Nobody
     // should have to re-learn their brain to repair it.
-    b.link("voucher_a", "is_a", "voucher_sazonal", None).unwrap();
-    b.link("voucher_b", "is_a", "voucher_sazonal", None).unwrap();
+    b.link("voucher_a", "is_a", "voucher_sazonal", None)
+        .unwrap();
+    b.link("voucher_b", "is_a", "voucher_sazonal", None)
+        .unwrap();
     num(&b, "voucher_b", "percent_off", 50.0);
 
     let hits = kin_only(&b, "voucher_a");
@@ -111,7 +113,13 @@ fn the_rare_pair_outranks_the_common_one() {
     text(&b, "voucher_a", "valido", "true");
     num(&b, "voucher_a", "percent_off", 50.0);
     num(&b, "voucher_c", "percent_off", 50.0);
-    for other in ["voucher_d", "voucher_e", "voucher_f", "voucher_g", "voucher_h"] {
+    for other in [
+        "voucher_d",
+        "voucher_e",
+        "voucher_f",
+        "voucher_g",
+        "voucher_h",
+    ] {
         text(&b, other, "valido", "true");
     }
 
@@ -233,10 +241,7 @@ fn kinship_reaches_across_two_cohorts_a_shared_label_joins() {
     text(&b, "v2_pro", "label", "Pro");
 
     let hits = kin_only(&b, "plano_base");
-    assert!(
-        hits.iter().any(|s| s.contains("lugar_base")),
-        "{hits:?}"
-    );
+    assert!(hits.iter().any(|s| s.contains("lugar_base")), "{hits:?}");
     assert!(!hits.iter().any(|s| s.contains("v2_pro")), "{hits:?}");
 }
 

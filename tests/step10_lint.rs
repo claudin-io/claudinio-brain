@@ -172,10 +172,20 @@ fn a_relation_that_closed_stops_counting_as_connectivity() {
     // `fornecido_por` is single-valued, so the second link closes the first and
     // `acme` is left with nothing open pointing at it. An entity reachable only
     // through history is not reachable now, and that is what retrieval sees.
-    b.link("produto", "fornecido_por", "acme", Some(ts("2026-01-01T00:00:00Z")))
-        .unwrap();
-    b.link("produto", "fornecido_por", "globex", Some(ts("2026-06-01T00:00:00Z")))
-        .unwrap();
+    b.link(
+        "produto",
+        "fornecido_por",
+        "acme",
+        Some(ts("2026-01-01T00:00:00Z")),
+    )
+    .unwrap();
+    b.link(
+        "produto",
+        "fornecido_por",
+        "globex",
+        Some(ts("2026-06-01T00:00:00Z")),
+    )
+    .unwrap();
 
     let keys: Vec<String> = check(&b).orphans.into_iter().map(|o| o.key).collect();
     assert_eq!(keys, vec!["acme".to_string()]);
@@ -242,7 +252,8 @@ fn two_entities_a_relation_already_joins_are_not_twins() {
     // A code and the voucher it redeems look like one thing spelled twice right up
     // until you notice the edge, at which point they are two things modelled
     // correctly.
-    b.link("resgate_promo", "resgata", "resgate_prom", None).unwrap();
+    b.link("resgate_promo", "resgata", "resgate_prom", None)
+        .unwrap();
 
     assert!(check(&b).twins.is_empty());
 }

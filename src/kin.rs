@@ -166,7 +166,11 @@ pub(crate) fn related(
 
     let mut out: Vec<Kin> = best.into_values().collect();
     // Rarest first, then by id so equal weights never reorder between runs.
-    out.sort_by(|a, b| b.weight.total_cmp(&a.weight).then(a.entity_id.cmp(&b.entity_id)));
+    out.sort_by(|a, b| {
+        b.weight
+            .total_cmp(&a.weight)
+            .then(a.entity_id.cmp(&b.entity_id))
+    });
     out.truncate(MAX_KIN);
     Ok(out)
 }

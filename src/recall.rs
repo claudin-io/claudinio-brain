@@ -373,7 +373,9 @@ fn kin_channel(
         let wa = weight.get(&a.entity_id).copied().unwrap_or(0.0);
         let wb = weight.get(&b.entity_id).copied().unwrap_or(0.0);
         wb.total_cmp(&wa)
-            .then((!asked.contains(a.predicate.as_str())).cmp(&!asked.contains(b.predicate.as_str())))
+            .then(
+                (!asked.contains(a.predicate.as_str())).cmp(&!asked.contains(b.predicate.as_str())),
+            )
             .then(a.fact_id.cmp(&b.fact_id))
     });
     candidates.truncate(CHANNEL_DEPTH);

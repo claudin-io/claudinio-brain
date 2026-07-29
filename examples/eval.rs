@@ -91,7 +91,12 @@ fn main() -> anyhow::Result<()> {
         // than being measured once and forgotten.
         (
             "no-graph",
-            vec![Channel::Bm25, Channel::Alias, Channel::Semantic, Channel::Kin],
+            vec![
+                Channel::Bm25,
+                Channel::Alias,
+                Channel::Semantic,
+                Channel::Kin,
+            ],
         ),
         // Everything except kinship, for the same reason and with the same
         // permanence. A channel that cannot beat the table without it does not

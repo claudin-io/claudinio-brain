@@ -69,7 +69,11 @@ impl Report {
                 p.subject,
                 p.predicate,
                 p.object,
-                if first { "   (creates this entity)" } else { "" }
+                if first {
+                    "   (creates this entity)"
+                } else {
+                    ""
+                }
             ));
         }
         if self.promotions.len() > 20 {
@@ -81,14 +85,22 @@ impl Report {
                 "repaired {} fact(s), creating {} entit{}.",
                 self.promotions.len(),
                 self.entities_created,
-                if self.entities_created == 1 { "y" } else { "ies" }
+                if self.entities_created == 1 {
+                    "y"
+                } else {
+                    "ies"
+                }
             )
         } else {
             format!(
                 "would repair {} fact(s), creating {} entit{}. Re-run with --apply.",
                 self.promotions.len(),
                 self.entities_created,
-                if self.entities_created == 1 { "y" } else { "ies" }
+                if self.entities_created == 1 {
+                    "y"
+                } else {
+                    "ies"
+                }
             )
         });
         out

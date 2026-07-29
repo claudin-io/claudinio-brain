@@ -87,7 +87,8 @@ fn a_number_is_never_promoted_under_a_relational_predicate() {
 
     // A predicate can be a relation and still be handed something that is
     // plainly a literal. An entity called `50` would be worse than the mistake.
-    b.link("voucher_a", "is_a", "voucher_sazonal", None).unwrap();
+    b.link("voucher_a", "is_a", "voucher_sazonal", None)
+        .unwrap();
     b.remember(&Assertion::new("voucher_b", "is_a", Object::num(50.0)))
         .unwrap();
 
@@ -258,8 +259,11 @@ fn a_brain_written_before_v5_opens_and_gains_the_column() {
     // first rather than at open.
     {
         let conn = rusqlite::Connection::open(&path).unwrap();
-        conn.execute("UPDATE meta SET value = '4' WHERE key = 'schema_version'", [])
-            .unwrap();
+        conn.execute(
+            "UPDATE meta SET value = '4' WHERE key = 'schema_version'",
+            [],
+        )
+        .unwrap();
         conn.execute("ALTER TABLE predicate DROP COLUMN relational", [])
             .unwrap();
     }
@@ -274,9 +278,11 @@ fn a_brain_written_before_v5_opens_and_gains_the_column() {
     let version: String = b
         .store()
         .conn()
-        .query_row("SELECT value FROM meta WHERE key = 'schema_version'", [], |r| {
-            r.get(0)
-        })
+        .query_row(
+            "SELECT value FROM meta WHERE key = 'schema_version'",
+            [],
+            |r| r.get(0),
+        )
         .unwrap();
     assert_eq!(version, "5");
 

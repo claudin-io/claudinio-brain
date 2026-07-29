@@ -138,10 +138,7 @@ fn cmd_remember(args: &RememberArgs, cli: &Cli, ctx: &Ctx) -> anyhow::Result<()>
     // failed.
     let hint = match args.entity {
         Some(_) => None,
-        None => brain::lint::missed_relation(
-            b.store().conn(),
-            &brain::norm::key(&args.predicate),
-        )?,
+        None => brain::lint::missed_relation(b.store().conn(), &brain::norm::key(&args.predicate))?,
     };
 
     if cli.json {
@@ -507,11 +504,7 @@ fn cmd_retract(fact_id: i64, reason: Option<&str>, cli: &Cli, ctx: &Ctx) -> anyh
     Ok(())
 }
 
-fn cmd_predicate(
-    args: &brain::cli::PredicateArgs,
-    cli: &Cli,
-    ctx: &Ctx,
-) -> anyhow::Result<()> {
+fn cmd_predicate(args: &brain::cli::PredicateArgs, cli: &Cli, ctx: &Ctx) -> anyhow::Result<()> {
     if args.cardinality.is_none() && args.relational.is_none() {
         anyhow::bail!("pass --cardinality or --relational");
     }
