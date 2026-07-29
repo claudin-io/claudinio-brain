@@ -17,6 +17,7 @@ pub mod embed;
 pub mod graph;
 pub mod ids;
 pub mod index;
+pub mod lint;
 pub mod locate;
 #[cfg(feature = "mcp")]
 pub mod mcp;

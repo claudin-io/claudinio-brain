@@ -62,6 +62,10 @@ pub enum Cmd {
     /// Report the brain's identity and contents.
     Stats,
 
+    /// Report what is structurally wrong: relations stored as strings,
+    /// entities nothing can reach, one thing living under two names.
+    Lint(LintArgs),
+
     /// Record a fact.
     Remember(RememberArgs),
 
@@ -163,6 +167,14 @@ pub struct LinkArgs {
     pub to: String,
     #[arg(long, value_name = "WHEN")]
     pub at: Option<String>,
+}
+
+#[derive(Args, Debug)]
+pub struct LintArgs {
+    /// Exit non-zero when anything is found, so an agent or a CI step can gate
+    /// on the brain staying connected.
+    #[arg(long)]
+    pub strict: bool,
 }
 
 #[derive(Args, Debug)]

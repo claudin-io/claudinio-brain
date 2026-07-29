@@ -25,7 +25,7 @@ fn main() -> std::process::ExitCode {
         .init();
 
     match run(Cli::parse()) {
-        Ok(()) => std::process::ExitCode::SUCCESS,
+        Ok(code) => code,
         Err(e) => {
             eprintln!("error: {e:#}");
             std::process::ExitCode::FAILURE
@@ -33,12 +33,22 @@ fn main() -> std::process::ExitCode {
     }
 }
 
-fn run(cli: Cli) -> anyhow::Result<()> {
+fn run(cli: Cli) -> anyhow::Result<std::process::ExitCode> {
     let ctx = Ctx::from_process()?;
+
+    // Every other command either works or fails. `lint` is the exception: a
+    // finding is a result, not a failure, so the report prints normally and
+    // `--strict` puts it in the exit status for a CI step to gate on.
+    if let Cmd::Lint(args) = &cli.cmd {
+        return cmd_lint(args, &cli, &ctx);
+    }
+
     match &cli.cmd {
         Cmd::Init(args) => cmd_init(args, &cli, &ctx),
         Cmd::Where => cmd_where(&cli, &ctx),
         Cmd::Stats => cmd_stats(&cli, &ctx),
+        // Taken above, before this match is reached.
+        Cmd::Lint(_) => Ok(()),
         Cmd::Remember(args) => cmd_remember(args, &cli, &ctx),
         Cmd::Link(args) => cmd_link(args, &cli, &ctx),
         Cmd::Get(args) => cmd_get(args, &cli, &ctx),
@@ -56,7 +66,8 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Cmd::Why { fact_id } => cmd_why(*fact_id, &cli, &ctx),
         Cmd::Retract { fact_id, reason } => cmd_retract(*fact_id, reason.as_deref(), &cli, &ctx),
         Cmd::Predicate { name, cardinality } => cmd_predicate(name, *cardinality, &cli, &ctx),
-    }
+    }?;
+    Ok(std::process::ExitCode::SUCCESS)
 }
 
 /// Opens the brain this invocation selected.
@@ -555,9 +566,14 @@ fn cmd_where(cli: &Cli, ctx: &Ctx) -> anyhow::Result<()> {
 fn cmd_stats(cli: &Cli, ctx: &Ctx) -> anyhow::Result<()> {
     let found = brain::cli::select(cli, ctx)?;
     let store = Store::open(&found.path)?;
+    let report = brain::lint::check(store.conn())?;
 
     let mut out = store.identity();
     out["created_at"] = serde_json::json!(store.created_at().to_string());
+    out["entities"] = serde_json::json!(report.entities);
+    out["facts"] = serde_json::json!(report.facts);
+    out["relations"] = serde_json::json!(report.edges);
+    out["unreachable_entities"] = serde_json::json!(report.orphans.len());
 
     if cli.json {
         emit(&serde_json::to_string_pretty(&out)?);
@@ -565,8 +581,52 @@ fn cmd_stats(cli: &Cli, ctx: &Ctx) -> anyhow::Result<()> {
         emit(&format!("{} ({})", store.label(), store.path().display()));
         emit(&format!("  id:      {}", store.id()));
         emit(&format!("  created: {}", store.created_at()));
+        emit(&format!(
+            "  holds:   {} entities, {} facts, {} of them relations",
+            report.entities, report.facts, report.edges
+        ));
+        // Surfaced here and not only in `lint` because this is the command
+        // someone runs to see how the brain is doing, and a brain whose entities
+        // cannot reach each other is not doing well.
+        if !report.orphans.is_empty() {
+            emit(&format!(
+                "  warning: {} entities have no open relation -- run `brain lint`",
+                report.orphans.len()
+            ));
+        }
     }
     Ok(())
+}
+
+fn cmd_lint(
+    args: &brain::cli::LintArgs,
+    cli: &Cli,
+    ctx: &Ctx,
+) -> anyhow::Result<std::process::ExitCode> {
+    let found = brain::cli::select(cli, ctx)?;
+    let store = Store::open(&found.path)?;
+    let report = brain::lint::check(store.conn())?;
+
+    if cli.json {
+        let mut out = store.identity();
+        if let Some(map) = serde_json::to_value(&report)?.as_object() {
+            for (k, v) in map {
+                out[k] = v.clone();
+            }
+        }
+        out["clean"] = serde_json::json!(report.is_clean());
+        emit(&serde_json::to_string_pretty(&out)?);
+    } else {
+        for line in report.lines() {
+            emit(&line);
+        }
+    }
+
+    Ok(if args.strict && !report.is_clean() {
+        std::process::ExitCode::FAILURE
+    } else {
+        std::process::ExitCode::SUCCESS
+    })
 }
 
 /// The single sanctioned path to stdout.
