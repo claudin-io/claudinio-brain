@@ -135,6 +135,21 @@ const RRF_K: f64 = 60.0;
 /// How many candidates each channel contributes before fusion.
 const CHANNEL_DEPTH: usize = 50;
 
+/// How many words of a question are read.
+///
+/// Not a quality setting -- a bound on work, and on a way `recall` could fail
+/// outright. Every word yields up to two identity terms, the alias channel binds
+/// each of them twice, and SQLite takes 32766 parameters in one statement. Paste
+/// a document into `recall` and it does not return a worse answer, it returns
+/// *"too many SQL variables"*, which an agent has no way to act on.
+///
+/// 512 is far above any question and far below the limit. The distinction that
+/// justifies it: a question has a subject, and something with five thousand words
+/// in it does not -- it is a document someone handed to the wrong function. Words
+/// past the cut are dropped in order rather than sampled, so the same text always
+/// asks the same question.
+const MAX_QUERY_WORDS: usize = 512;
+
 /// How many fused hits seed graph expansion when the question names no entity
 /// the brain recognizes.
 const SEED_DEPTH: usize = 8;
@@ -516,9 +531,17 @@ impl Brain {
         });
         candidates.truncate(CHANNEL_DEPTH);
 
+        // Predicates are looked up for the *roads* rather than for every edge the
+        // walk crossed, because roads are the only edges anything asks about.
+        // That is also what bounds the query: `bridges` grows with the whole
+        // neighbourhood and, on a brain whose p99 degree sets a high hub cut, can
+        // pass more ids than SQLite will take parameters. Roads are bounded by the
+        // candidates they lead to.
+        let roads = n.roads_to(candidates.iter().map(|c| c.entity_id));
+
         Ok(Walk {
-            roads: n.roads_to(candidates.iter().map(|c| c.entity_id)),
-            bridge_predicates: graph::predicates(conn, n.bridges.iter().copied())?,
+            bridge_predicates: graph::predicates(conn, roads.iter().copied())?,
+            roads,
             ranked: candidates.iter().map(|c| c.fact_id).collect(),
             reached: ids,
             asked,
@@ -644,6 +667,22 @@ impl Brain {
             return Ok(Vec::new());
         }
         let vector = self.embedder().embed_one(text)?;
+
+        // A text the embedder knows no token of comes back as a zero vector, and
+        // a zero vector has no direction, so it has no nearest neighbours either.
+        // Searching with it anyway does not give a weak answer, it gives a
+        // fabricated one: [`cosine_from_l2`] inverts a relation that holds only
+        // between unit-length vectors, and against a zero query every fact in the
+        // brain recovers the same fictitious 0.5 -- comfortably over
+        // [`MIN_SEMANTIC_COSINE`], which is why a query of three control
+        // characters used to come back with ten confident hits.
+        //
+        // The embedder normalizes, so the norm here is either 1 or exactly 0.
+        // There is nothing in between for this test to misjudge.
+        let norm: f32 = vector.iter().map(|x| x * x).sum();
+        if norm < 0.5 {
+            return Ok(Vec::new());
+        }
         let filter = VecFilter {
             open_only: matches!(q.when, When::Now),
             scope: q.scope.clone(),
@@ -853,7 +892,7 @@ fn alias_channel(
 /// fact through BM25 but does not *name* it -- identity stays exact even where
 /// search is forgiving.
 pub(crate) fn normalized_terms(text: &str) -> Vec<String> {
-    let words: Vec<&str> = text.split_whitespace().collect();
+    let words: Vec<&str> = text.split_whitespace().take(MAX_QUERY_WORDS).collect();
     let mut out = Vec::new();
     for (i, w) in words.iter().enumerate() {
         let single = norm::key(w);
@@ -882,6 +921,7 @@ fn fts_query(text: &str) -> Option<String> {
     let terms: Vec<String> = text
         .split(|c: char| !c.is_alphanumeric())
         .filter(|t| !t.is_empty())
+        .take(MAX_QUERY_WORDS)
         // Single characters carry almost no signal in Latin scripts and blow up
         // the candidate set. Non-ASCII single characters are kept: one CJK
         // character is a word.
