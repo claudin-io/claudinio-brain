@@ -24,6 +24,7 @@ pub mod locate;
 pub mod mcp;
 pub mod norm;
 pub mod recall;
+pub mod repair;
 pub mod store;
 #[cfg(feature = "studio")]
 pub mod studio;

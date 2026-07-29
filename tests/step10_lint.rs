@@ -43,11 +43,16 @@ fn a_predicate_used_both_ways_is_reported_with_both_counts() {
     let tmp = TempDir::new().unwrap();
     let b = brain(&tmp);
 
-    // The shape that started this: some writers passed an entity, most passed a
-    // string, and every string one is invisible to the graph.
-    b.link("v2_pro", "is_a", "plano", None).unwrap();
+    // The strings have to come first. Once one write records `is_a` pointing at
+    // an entity, the brain infers that `is_a` is a relation and promotes every
+    // later string itself -- so a predicate can only end up mixed by having been
+    // written the wrong way before anybody wrote it the right way. That is
+    // exactly how the brain this was built for got into the state it was in, and
+    // it is why this finding stays worth having even though new brains now
+    // correct themselves.
     text(&b, "voucher_a", "is_a", "voucher_sazonal");
     text(&b, "voucher_b", "is_a", "voucher_sazonal");
+    b.link("v2_pro", "is_a", "plano", None).unwrap();
 
     let report = check(&b);
     let mixed = report

@@ -174,8 +174,9 @@ impl Brain {
         let valid_from = a.valid_from.unwrap_or(now);
 
         let entity_id = upsert_entity(&tx, &subject_key, &a.subject, now)?;
-        let cardinality = upsert_predicate(&tx, &predicate_key, a.cardinality)?;
-        let object = resolve_object(&tx, &a.object, now)?;
+        let shape = upsert_predicate(&tx, &predicate_key, a.cardinality)?;
+        let object = resolve_object(&tx, &a.object, shape.relational, now)?;
+        let cardinality = shape.cardinality;
 
         let w = Write {
             a,
@@ -412,6 +413,25 @@ impl Brain {
         tx.execute(
             "UPDATE fact SET is_single = ? WHERE predicate = ?",
             params![(c == Cardinality::Single) as i64, key],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Fixes whether a predicate's object names a thing, overriding what was
+    /// inferred.
+    ///
+    /// Takes effect on later writes only. Facts already stored keep the shape
+    /// they were written with -- rewriting them is [`crate::repair`]'s job, and
+    /// it is a separate decision because it touches rows that are already true.
+    pub fn set_relational(&self, predicate: &str, relational: bool) -> Result<()> {
+        let key = require_key("predicate", predicate)?;
+        let tx = self.conn().unchecked_transaction()?;
+        tx.execute(
+            "INSERT INTO predicate(key, cardinality, declared, relational)
+             VALUES (?, 'single', 1, ?)
+             ON CONFLICT(key) DO UPDATE SET relational = excluded.relational, declared = 1",
+            params![key, relational as i64],
         )?;
         tx.commit()?;
         Ok(())
@@ -723,6 +743,14 @@ fn entity_key(conn: &Connection, id: i64) -> Result<String> {
     )
 }
 
+/// What a predicate is: how many values it holds at once, and whether its object
+/// names a thing.
+#[derive(Debug, Clone, Copy)]
+struct PredicateShape {
+    cardinality: Cardinality,
+    relational: bool,
+}
+
 /// Returns the predicate's cardinality, creating it if unknown.
 ///
 /// New predicates default to single-valued. That is the conservative choice: if
@@ -735,31 +763,41 @@ fn upsert_predicate(
     conn: &Connection,
     key: &str,
     declared: Option<Cardinality>,
-) -> Result<Cardinality> {
-    let existing: Option<(String, i64)> = conn
+) -> Result<PredicateShape> {
+    let existing: Option<(String, i64, i64)> = conn
         .query_row(
-            "SELECT cardinality, declared FROM predicate WHERE key = ?",
+            "SELECT cardinality, declared, relational FROM predicate WHERE key = ?",
             params![key],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .optional()?;
 
-    match existing {
+    // Read out before the match below consumes the row.
+    let was_declared = matches!(existing, Some((_, 1, _)));
+    let stored_relational = existing.as_ref().map(|&(_, _, r)| r != 0);
+
+    let relational = match (was_declared, stored_relational) {
+        (true, Some(r)) => r,
+        _ => is_relational(conn, key)?,
+    };
+
+    let cardinality = match existing {
         // A cardinality the user fixed is never revised by an incoming assertion.
-        Some((c, 1)) => Ok(Cardinality::parse(&c).unwrap_or(Cardinality::Single)),
-        Some((c, _)) => {
+        Some((c, 1, _)) => Cardinality::parse(&c).unwrap_or(Cardinality::Single),
+        Some((c, _, _)) => {
             if let Some(d) = declared {
                 conn.execute(
                     "UPDATE predicate SET cardinality = ?, declared = 1 WHERE key = ?",
                     params![d.as_str(), key],
                 )?;
-                return Ok(d);
+                d
+            } else {
+                conn.execute(
+                    "UPDATE predicate SET observed_n = observed_n + 1 WHERE key = ?",
+                    params![key],
+                )?;
+                Cardinality::parse(&c).unwrap_or(Cardinality::Single)
             }
-            conn.execute(
-                "UPDATE predicate SET observed_n = observed_n + 1 WHERE key = ?",
-                params![key],
-            )?;
-            Ok(Cardinality::parse(&c).unwrap_or(Cardinality::Single))
         }
         None => {
             let c = declared.unwrap_or(Cardinality::Single);
@@ -767,9 +805,49 @@ fn upsert_predicate(
                 "INSERT INTO predicate(key, cardinality, declared, observed_n) VALUES (?,?,?,1)",
                 params![key, c.as_str(), declared.is_some() as i64],
             )?;
-            Ok(c)
+            c
         }
+    };
+
+    // Record what was inferred, so the flag on disk always matches the behaviour.
+    // A brain whose stored ontology disagrees with how it actually writes is a
+    // brain nobody can reason about, including `lint` and the studio.
+    if !was_declared && stored_relational != Some(relational) {
+        conn.execute(
+            "UPDATE predicate SET relational = ? WHERE key = ?",
+            params![relational as i64, key],
+        )?;
     }
+
+    Ok(PredicateShape {
+        cardinality,
+        relational,
+    })
+}
+
+/// Whether this predicate's objects name things.
+///
+/// The evidence is one entity-valued fact. Not a majority, deliberately: a
+/// predicate is one relation or one attribute, never both, so the first time
+/// somebody records `is_a` pointing at an entity they have said what `is_a` is.
+/// A majority rule would have been useless for the case this was built for --
+/// there `is_a` stood at 10 entity-valued against 59 strings, and any threshold
+/// worth the name would have called it an attribute and kept it broken.
+///
+/// This is the same rule [`crate::lint::missed_relation`] warns from, on purpose.
+/// One notion of "this reads as a relation" is checkable; two that merely agree
+/// today are a divergence waiting to happen.
+///
+/// It can be wrong, so it is overridable and the override sticks: `declared = 1`
+/// is never revisited, here or anywhere.
+fn is_relational(conn: &Connection, key: &str) -> Result<bool> {
+    let n: i64 = conn.query_row(
+        "SELECT count(*) FROM fact
+          WHERE predicate = ? AND object_entity_id IS NOT NULL AND retracted_at IS NULL",
+        params![key],
+        |r| r.get(0),
+    )?;
+    Ok(n > 0)
 }
 
 /// An object flattened into the columns it occupies.
@@ -801,8 +879,35 @@ impl ResolvedObject {
     }
 }
 
-fn resolve_object(conn: &Connection, o: &Object, now: Timestamp) -> Result<ResolvedObject> {
+/// Flattens an object into columns, promoting a string to an entity when the
+/// predicate is a relation.
+///
+/// Promotion is what makes `relational` more than a label. `is_a cupao_stripe`
+/// written as a string is a fact nothing can walk through, and the writer gets no
+/// signal because nothing fails; once the predicate is known to be a relation,
+/// the string is resolved through the very same path `Object::Entity` takes, so
+/// identity stays exactly as exact as it was.
+///
+/// A number is never promoted. A predicate can be a relation and still receive
+/// something that is plainly a literal, and inventing an entity called `50` would
+/// be a worse outcome than the mistake being caught.
+fn resolve_object(
+    conn: &Connection,
+    o: &Object,
+    relational: bool,
+    now: Timestamp,
+) -> Result<ResolvedObject> {
     Ok(match o {
+        Object::Text(s) if relational && !norm::key(s).is_empty() => {
+            let key = norm::key(s);
+            let id = upsert_entity(conn, &key, s, now)?;
+            ResolvedObject {
+                text: Some(entity_label(conn, id)?),
+                num: None,
+                entity_id: Some(id),
+                unit: None,
+            }
+        }
         Object::Text(s) => ResolvedObject {
             text: Some(s.clone()),
             num: None,

@@ -65,7 +65,8 @@ fn run(cli: Cli) -> anyhow::Result<std::process::ExitCode> {
         Cmd::Studio(args) => cmd_studio(args, &cli, &ctx),
         Cmd::Why { fact_id } => cmd_why(*fact_id, &cli, &ctx),
         Cmd::Retract { fact_id, reason } => cmd_retract(*fact_id, reason.as_deref(), &cli, &ctx),
-        Cmd::Predicate { name, cardinality } => cmd_predicate(name, *cardinality, &cli, &ctx),
+        Cmd::Predicate(args) => cmd_predicate(args, &cli, &ctx),
+        Cmd::Repair(args) => cmd_repair(args, &cli, &ctx),
     }?;
     Ok(std::process::ExitCode::SUCCESS)
 }
@@ -507,21 +508,65 @@ fn cmd_retract(fact_id: i64, reason: Option<&str>, cli: &Cli, ctx: &Ctx) -> anyh
 }
 
 fn cmd_predicate(
-    name: &str,
-    cardinality: brain::brain::Cardinality,
+    args: &brain::cli::PredicateArgs,
     cli: &Cli,
     ctx: &Ctx,
 ) -> anyhow::Result<()> {
+    if args.cardinality.is_none() && args.relational.is_none() {
+        anyhow::bail!("pass --cardinality or --relational");
+    }
     let b = open(cli, ctx)?;
-    b.set_cardinality(name, cardinality)?;
+    if let Some(c) = args.cardinality {
+        b.set_cardinality(&args.name, c)?;
+    }
+    if let Some(r) = args.relational {
+        b.set_relational(&args.name, r)?;
+    }
 
     if cli.json {
         emit(&serde_json::to_string_pretty(&answer(
             &b,
-            serde_json::json!({ "predicate": name, "cardinality": cardinality }),
+            serde_json::json!({
+                "predicate": args.name,
+                "cardinality": args.cardinality,
+                "relational": args.relational,
+            }),
         ))?);
     } else {
-        emit(&format!("{name} is now {}-valued", cardinality.as_str()));
+        if let Some(c) = args.cardinality {
+            emit(&format!("{} is now {}-valued", args.name, c.as_str()));
+        }
+        if let Some(r) = args.relational {
+            emit(&format!(
+                "{} now stores its object as {}",
+                args.name,
+                if r { "an entity" } else { "a literal" }
+            ));
+            if r {
+                emit("existing facts are unchanged -- run `brain repair --relations` for those");
+            }
+        }
+    }
+    Ok(())
+}
+
+fn cmd_repair(args: &brain::cli::RepairArgs, cli: &Cli, ctx: &Ctx) -> anyhow::Result<()> {
+    if !args.relations {
+        anyhow::bail!("pass --relations (the only repair there is so far)");
+    }
+    let b = open(cli, ctx)?;
+    let report = brain::repair::relations(b.store().conn(), args.apply)?;
+
+    if cli.json {
+        let mut body = serde_json::to_value(&report)?;
+        if let Some(map) = body.as_object_mut() {
+            map.insert("promotions_count".into(), report.promotions.len().into());
+        }
+        emit(&serde_json::to_string_pretty(&answer(&b, body))?);
+    } else {
+        for line in report.lines() {
+            emit(&line);
+        }
     }
     Ok(())
 }

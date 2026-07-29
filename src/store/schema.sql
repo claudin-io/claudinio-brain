@@ -37,11 +37,19 @@ CREATE TABLE entity_alias (
 -- The learned ontology. Cardinality is the supersession rule: a `single`
 -- predicate holds one value at a time, so a new value closes the old one; a
 -- `multi` predicate lets values coexist.
+--
+-- `relational` is the other half of what a predicate is: whether its object names
+-- a thing or is a literal. It matters because the two are not interchangeable --
+-- a relation written as a string stores perfectly, reads back perfectly, and is
+-- invisible to every walk of the graph, so the mistake has no symptom. When this
+-- is set, a text object is resolved to an entity instead of being taken at face
+-- value.
 CREATE TABLE predicate (
   key         TEXT PRIMARY KEY,
   cardinality TEXT NOT NULL CHECK (cardinality IN ('single', 'multi')),
   declared    INTEGER NOT NULL DEFAULT 0,  -- 1 = user fixed it; never auto-change
-  observed_n  INTEGER NOT NULL DEFAULT 0
+  observed_n  INTEGER NOT NULL DEFAULT 0,
+  relational  INTEGER NOT NULL DEFAULT 0
 ) STRICT;
 
 CREATE TABLE fact (

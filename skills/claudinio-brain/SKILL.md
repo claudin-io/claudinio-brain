@@ -113,8 +113,9 @@ brain history auth strategy                   # the whole trajectory
 ```
 
 Use `recall` when you do not know the exact subject and predicate — it takes a
-natural-language question and fuses four retrieval channels (words, entity
-names, meaning, and walking the graph):
+natural-language question and fuses five retrieval channels (words, entity names,
+meaning, walking the graph, and entities that merely have something in common
+with what you asked about):
 
 ```bash
 brain recall "how does the service authenticate" --json
@@ -164,12 +165,31 @@ shaped like them are always relations. When in doubt, ask whether you would ever
 want `brain entity <that value> --neighbors` to return something. If yes, it is
 an entity.
 
+The brain learns this for itself: the first time a predicate is recorded with an
+entity object, later string values under it are resolved to entities too. So
+getting `is_a` right once fixes it going forward. Override with
+`brain predicate <name> --relational` or `--relational false`; a declared setting
+is never revised.
+
 Check yourself before finishing a session:
 
 ```bash
 brain lint          # relations stored as strings, entities nothing can reach
 brain lint --strict # non-zero exit, for a CI step or a hook
 ```
+
+If `lint` reports a predicate stored both ways, the facts already written stay as
+they are — inference only changes new ones. Fix those explicitly:
+
+```bash
+brain predicate is_a --relational      # say what it is
+brain repair --relations               # dry run: shows exactly what it would do
+brain repair --relations --apply       # link them
+```
+
+`repair` changes how a fact is stored, never what it says — the statement comes
+out byte-identical and nothing is retracted. If a claim was actually *wrong*,
+that is `retract`, not this.
 
 ## Correcting yourself
 
@@ -246,7 +266,7 @@ same operations with the same rules.
 
 ```
 init  where  stats  lint  remember  link  get  recall  history
-entity  why  retract  alias  reindex  predicate
+entity  why  retract  alias  reindex  predicate  repair
 ```
 
 `brain <command> --help` for the flags. `--brain <path>`, `--use <name>` and

@@ -18,8 +18,9 @@ use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
 /// Bumped whenever the on-disk layout changes in a way older binaries cannot read.
-/// v2 added the bitemporal fact model, v3 the FTS5 index, v4 the vector index.
-pub const SCHEMA_VERSION: i64 = 4;
+/// v2 added the bitemporal fact model, v3 the FTS5 index, v4 the vector index,
+/// v5 the relational flag on `predicate`.
+pub const SCHEMA_VERSION: i64 = 5;
 
 const SCHEMA: &str = include_str!("schema.sql");
 
@@ -161,6 +162,9 @@ impl Store {
                 supported: SCHEMA_VERSION,
             });
         }
+        if found < SCHEMA_VERSION {
+            migrate(&conn, found)?;
+        }
 
         let label = read_meta(&conn, "brain_label")?.unwrap_or_default();
         let created_at = read_meta(&conn, "created_at")?
@@ -208,6 +212,38 @@ impl Store {
             "brain_path": self.path,
         })
     }
+}
+
+/// Brings an older brain up to [`SCHEMA_VERSION`].
+///
+/// Until v5 there was nothing here, and `open` simply accepted any version at or
+/// below the current one -- which was fine only for as long as no version ever
+/// added a column. It does not survive one: a v4 file opened by a v5 binary would
+/// open cleanly and then fail at runtime on the first query touching the new
+/// column, in whatever command happened to reach it first.
+///
+/// One transaction for the whole ladder, so a brain is never left half-migrated.
+/// Steps are cumulative and must stay append-only: a brain skipping several
+/// versions runs every step in order.
+fn migrate(conn: &Connection, from: i64) -> Result<()> {
+    let tx = conn.unchecked_transaction()?;
+
+    if from < 5 {
+        // Legal on a STRICT table because the column is NOT NULL *with* a
+        // default; existing rows take 0, which is the conservative reading --
+        // every predicate an old brain holds keeps storing objects exactly as it
+        // did until somebody says otherwise.
+        tx.execute_batch(
+            "ALTER TABLE predicate ADD COLUMN relational INTEGER NOT NULL DEFAULT 0",
+        )?;
+    }
+
+    tx.execute(
+        "UPDATE meta SET value = ? WHERE key = 'schema_version'",
+        [SCHEMA_VERSION.to_string()],
+    )?;
+    tx.commit()?;
+    Ok(())
 }
 
 /// Opens a connection with the isolation guarantees applied.
