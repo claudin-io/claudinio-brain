@@ -342,6 +342,20 @@
         const REPULSION = 900 * Math.min(1, Math.sqrt(REF / n));
         const SPRING = 0.035, REST = 16, CENTER = 0.012, DAMP = 0.82;
 
+        /* An inverse square with no floor is an explosion waiting for the first
+         * pair of nodes that happens to start close together. Measured on a
+         * 683-entity brain: the cloud reached a radius of 4.3e13 two and a half
+         * seconds after opening and took twenty-four more to fall back to its
+         * real 180. Nothing reported it, because a graph that has left the solar
+         * system looks the same as a graph you cannot see.
+         *
+         * MIN_SEP2 is a node diameter squared -- two spheres cannot be nearer
+         * than touching, so pretending they can buys nothing but the blow-up.
+         * MAX_STEP then bounds the whole system rather than one term of it: no
+         * node crosses more than a spring's rest length in a frame, whatever the
+         * forces say, so a layout can be wrong but never unbounded. */
+        const MIN_SEP2 = 16, MAX_STEP = REST;
+
         for (let i = 0; i < n; i++) {
           const a = pos.get(nodes[i].id);
           for (let j = i + 1; j < n; j++) {
@@ -350,7 +364,7 @@
             let d2 = dx * dx + dy * dy + dz * dz;
             if (d2 < 0.01) { dx = rand() - 0.5; dy = rand() - 0.5; dz = rand() - 0.5; d2 = 0.75; }
             const d = Math.sqrt(d2);
-            const f = (REPULSION / d2) * alpha;
+            const f = (REPULSION / Math.max(d2, MIN_SEP2)) * alpha;
             const ux = dx / d, uy = dy / d, uz = dz / d;
             a.vx += ux * f; a.vy += uy * f; a.vz += uz * f;
             b.vx -= ux * f; b.vy -= uy * f; b.vz -= uz * f;
@@ -374,6 +388,11 @@
           p.vy -= p.y * CENTER * alpha;
           p.vz -= p.z * CENTER * alpha;
           p.vx *= DAMP; p.vy *= DAMP; p.vz *= DAMP;
+          const speed = Math.hypot(p.vx, p.vy, p.vz);
+          if (speed > MAX_STEP) {
+            const k = MAX_STEP / speed;
+            p.vx *= k; p.vy *= k; p.vz *= k;
+          }
           p.x += p.vx; p.y += p.vy; p.z += p.vz;
         }
 
@@ -740,23 +759,39 @@
     let framed = false;
     controls.addEventListener('start', () => { framed = true; });
 
-    function frameCamera() {
-      if (!view.nodes.length) return;
-      applyScale(measureExtent());
+    function placeCamera() {
       const dist = fitDistance(extent);
       camera.position.set(0, dist * 0.16, dist);
       controls.target.set(0, 0, 0);
       controls.update();
     }
 
-    /* Called every frame the layout is still moving. 4% of drift is under what
-     * reads as the camera moving and over what a settled layout jitters by. */
+    /* Snap to the graph as it stands. For a rebuild and for `f`, where the point
+     * is to arrive rather than to ease. */
+    function frameCamera() {
+      if (!view.nodes.length) return;
+      applyScale(measureExtent());
+      placeCamera();
+    }
+
+    /* Called every frame the layout is still moving.
+     *
+     * Eased rather than snapped, and that is not a flourish. The extent is a
+     * maximum over every node, so it is precisely the statistic that one badly
+     * placed node dominates; chasing it frame by frame let a layout blow-up drag
+     * the camera across thirteen orders of magnitude at thirty-six reversals a
+     * second. That blow-up is fixed in `step` above, but a follower that one
+     * number can drive mad should not be the only thing between a bad frame and
+     * an unusable screen. Easing bounds what any single frame can do to the
+     * camera, whatever it claims the graph now measures. */
+    const FOLLOW = 0.08;
+
     function trackExtent() {
       if (!view.nodes.length) return;
-      const r = measureExtent();
-      if (extent && r < extent * 1.04 && r > extent * 0.96) return;
-      if (framed) applyScale(r);
-      else frameCamera();
+      const next = extent + (measureExtent() - extent) * FOLLOW;
+      if (extent && Math.abs(next - extent) < extent * 0.004) return;
+      applyScale(next);
+      if (!framed) placeCamera();
     }
 
     function flyTo(entityId) {
