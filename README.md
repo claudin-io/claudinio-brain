@@ -110,7 +110,7 @@ and the relation is the map to it.
 
 ## How recall works
 
-Four independent channels retrieve candidates, and reciprocal rank fusion
+Five independent channels retrieve candidates, and reciprocal rank fusion
 combines them. Fusing rather than picking one is the point: agreement between
 independent signals is itself evidence.
 
@@ -120,6 +120,15 @@ independent signals is itself evidence.
 | **alias** | entities the question names outright, by key or by another name. |
 | **semantic** | paraphrases, via static embeddings compiled into the binary. |
 | **graph** | facts reached by walking relations out from what the question named. |
+| **kin** | facts on entities that merely have something *in common* with it. |
+
+The last one exists because almost nothing in a real brain has an edge to its
+siblings. Twenty vouchers each recording `is_a seasonal_voucher` are a cohort
+nobody ever drew, and two entities are kin when they hold the same
+`(predicate, object)` pair — no edge required, and the value may be a plain
+string. Rarity does the ranking: a pair five entities share says far more about
+which of them matters than one twenty-two share, and inverse document frequency
+is what sorts them.
 
 Everything is filtered temporally *before* ranking, so recall answers with what
 is true rather than with everything ever recorded. A retracted fact appears in
@@ -265,7 +274,7 @@ A graph on two timelines does not read well as a list. `brain studio` opens one
 in a browser, in 3D, served from localhost:
 
 ![The studio: a 3D graph of a coffee roaster's brain, a recall trace showing
-which of the four channels found each hit, an inspector listing one supplier's
+which of the five channels found each hit, an inspector listing one supplier's
 facts and names, and the bitemporal plane along the bottom](docs/studio.png)
 
 ```bash
@@ -296,7 +305,7 @@ is a bar that stops and another starting higher up. A correction is a struck bar
 with nothing taking its place. A reassertion is one bar that got thicker instead
 of a second bar appearing.
 
-**The recall trace.** Ask a question and the four channels colour the nodes they
+**The recall trace.** Ask a question and the channels colour the nodes they
 surfaced, with each hit's channels and fused score beside it. A fact several
 channels agree on is drawn in their average — which is the agreement RRF rewards,
 made visible. In the screenshot above, "de que pais vem o bourbon amarelo" is
@@ -383,7 +392,7 @@ cargo run --example eval                      # measure, fail on regression
 cargo run --example eval -- --misses          # ...and name the cases still wrong
 ```
 
-Four suites — retrieval, temporal, graph, alias — each scored against every
+Five suites — retrieval, temporal, graph, alias, kin — each scored against every
 channel alone and fused, so the marginal contribution of a channel is a number
 rather than an opinion. `evals/baseline.json` is committed and CI fails on
 regression, which means improving a number requires updating the baseline in the
@@ -398,7 +407,7 @@ Pre-1.0. The on-disk format is not yet stable and there is no migration path
 between schema versions.
 
 Built and working: the sealed store and resolution ladder, the bitemporal fact
-model, all four retrieval channels, declared plus learned names, the MCP server,
+model, all five retrieval channels, declared plus learned names, the MCP server,
 and the studio. Four surfaces — the CLI, the MCP server, the studio and the Rust
 library — all over one core, so what an agent sees is exactly what `brain recall`
 shows you and exactly what the graph draws.
