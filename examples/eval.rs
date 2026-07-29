@@ -201,7 +201,10 @@ fn gate(
         return Ok(0);
     }
     let Ok(text) = std::fs::read_to_string(path) else {
-        println!("no baseline at {} -- run with --update-baseline.", path.display());
+        println!(
+            "no baseline at {} -- run with --update-baseline.",
+            path.display()
+        );
         return Ok(0);
     };
     let baseline: BTreeMap<String, BTreeMap<String, Metrics>> = serde_json::from_str(&text)?;
