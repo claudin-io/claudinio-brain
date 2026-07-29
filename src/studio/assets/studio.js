@@ -294,6 +294,7 @@
   const sim = (() => {
     const pos = new Map();          // entity id -> {x,y,z,vx,vy,vz}
     let alpha = 1;
+    let shown = 0;                  // size of the node set the layout last saw
     let seedState = 0;
     for (const c of SNAP.brain_id) seedState = (seedState * 31 + c.charCodeAt(0)) >>> 0;
 
@@ -314,18 +315,32 @@
 
     return {
       pos,
-      get alpha() { return alpha; },
       reheat(v = 0.9) { alpha = Math.max(alpha, v); },
       sync() {
-        for (const n of view.nodes) if (!pos.has(n.id)) pos.set(n.id, place(n.id));
-        this.reheat();
+        let added = 0;
+        for (const n of view.nodes) if (!pos.has(n.id)) { pos.set(n.id, place(n.id)); added++; }
+        // Only when the set actually moved. Dragging the timeline rebuilds the
+        // view on every pointer event, and reheating there pins the layout at
+        // full temperature for the whole drag: the cloud boils instead of
+        // settling, and nothing that waits on it settling ever happens.
+        if (added || shown !== view.nodes.length) this.reheat();
+        shown = view.nodes.length;
       },
       step() {
         const nodes = view.nodes;
         const n = nodes.length;
         if (n === 0 || alpha < 0.002) { alpha = Math.max(alpha * 0.98, 0); return false; }
 
-        const REPULSION = 900, SPRING = 0.035, REST = 16, CENTER = 0.012, DAMP = 0.82;
+        /* Repulsion is summed over every other node, so holding it constant makes
+         * the cloud inflate with the brain: 20 entities settle inside a radius of
+         * 97, 615 inside 434, 1500 inside 803. Past a few hundred that is a graph
+         * you cannot get far enough away from to see, drawn in nodes four pixels
+         * across. Damping it by a square root keeps the radius growing with n --
+         * a bigger brain should look bigger -- at n^(1/6) instead of n^(1/3), and
+         * the clamp leaves every graph up to REF laid out exactly as before. */
+        const REF = 60;
+        const REPULSION = 900 * Math.min(1, Math.sqrt(REF / n));
+        const SPRING = 0.035, REST = 16, CENTER = 0.012, DAMP = 0.82;
 
         for (let i = 0; i < n; i++) {
           const a = pos.get(nodes[i].id);
@@ -412,8 +427,9 @@
 
     const scene = new THREE.Scene();
     // Light enough to give depth, far from enough to grey out the middle of the
-    // graph -- which is where whatever you are looking at usually is.
-    scene.fog = new THREE.FogExp2(0x08090d, 0.0032);
+    // graph -- which is where whatever you are looking at usually is. Every
+    // number below is set by `applyScale`, including this one.
+    scene.fog = new THREE.FogExp2(0x08090d, 0);
 
     const camera = new THREE.PerspectiveCamera(52, 1, 0.5, 4000);
     camera.position.set(0, 12, 92);
@@ -422,8 +438,56 @@
     controls.enableDamping = true;
     controls.dampingFactor = 0.08;
     controls.rotateSpeed = 0.7;
-    controls.minDistance = 8;
-    controls.maxDistance = 900;
+
+    /* Everything that has to know how big the graph got.
+     *
+     * A brain with twenty entities lays out inside a radius of about 97 and one
+     * with fifteen hundred inside 294, so a fog density, a far plane or a zoom
+     * stop that suits one is wrong for the other by a factor of three. Fixed
+     * constants here are what made a large brain render as a black rectangle:
+     * every node was inside the frustum and inside the viewport, and the fog had
+     * eaten 99.96% of it. These are derived from the measured extent instead. */
+    const FOG_FLOOR = 0.25;   // of the far side must survive at maximum zoom-out
+    const FOG_K = Math.sqrt(-Math.log(FOG_FLOOR));
+    const ZOOM_OUT = 2.0;     // how far past a snug fit the camera may pull back
+    let extent = 0;
+
+    function measureExtent() {
+      let r = 0;
+      for (const ent of view.nodes) {
+        const p = sim.pos.get(ent.id);
+        if (p) r = Math.max(r, Math.hypot(p.x, p.y, p.z));
+      }
+      return Math.max(r, 8);
+    }
+
+    /* The distance at which a sphere of radius r fills the frame.
+     *
+     * Both axes, not just the vertical field: a tall narrow window is bounded by
+     * its width, and framing on the vertical alone crops the graph exactly when
+     * there is least room for it. */
+    function fitDistance(r) {
+      const vt = Math.tan((camera.fov * Math.PI) / 360);
+      return (r * 1.06) / Math.max(1e-3, Math.min(vt, vt * camera.aspect));
+    }
+
+    function applyScale(r) {
+      extent = r;
+      const fit = fitDistance(r);
+      controls.minDistance = Math.max(1.5, r * 0.02);
+      controls.maxDistance = fit * ZOOM_OUT;
+      camera.far = (controls.maxDistance + r) * 1.6;
+      camera.near = Math.max(0.1, camera.far / 4e4);
+      camera.updateProjectionMatrix();
+      // Depth cue, not a curtain. The density is pinned to the one place fog can
+      // do real damage -- the far side of the graph, seen from as far out as the
+      // controls allow -- and told to leave FOG_FLOOR of it standing there.
+      scene.fog.density = FOG_K / (controls.maxDistance + r);
+    }
+
+    // A starting scale, so an empty brain and the first frames of a rebuild have
+    // a coherent camera rather than an infinite one.
+    applyScale(60);
 
     scene.add(new THREE.AmbientLight(0xffffff, 0.85));
     const key = new THREE.DirectionalLight(0xbfd4ff, 1.5);
@@ -528,7 +592,12 @@
       scene.add(lines);
 
       paint();
-      frameCamera();
+      // A rebuild is a filter change, not a request to move the camera. Toggling
+      // "show retracted" on a graph the user has already framed should leave
+      // their view where it is -- but the fog and the zoom stops still have to
+      // follow the set that is now on screen.
+      if (framed) applyScale(measureExtent());
+      else frameCamera();
     }
 
     /* Colour is the only thing selection changes, so it is the only thing
@@ -649,28 +718,40 @@
       return out;
     }
 
-    /* The layout starts as a random cloud, so framing it at rebuild time frames
-     * noise. The real fit happens once the sim has cooled -- unless the user got
-     * to the camera first, in which case moving it under them would be rude. */
+    /* The layout inflates by an order of magnitude in its first second, so
+     * framing it at rebuild time frames noise and the scale-dependent constants
+     * have to be re-derived while it moves -- not once, at rest. The camera
+     * follows only until the user touches it, because moving it under them would
+     * be rude; `f` hands framing back. */
     let framed = false;
     controls.addEventListener('start', () => { framed = true; });
 
     function frameCamera() {
       if (!view.nodes.length) return;
-      let r = 0;
-      for (const ent of view.nodes) {
-        const p = sim.pos.get(ent.id);
-        r = Math.max(r, Math.hypot(p.x, p.y, p.z));
-      }
-      const dist = Math.max(42, ((r + 10) / Math.tan((camera.fov * Math.PI) / 360)) * 0.92);
+      applyScale(measureExtent());
+      const dist = fitDistance(extent);
       camera.position.set(0, dist * 0.16, dist);
       controls.target.set(0, 0, 0);
       controls.update();
     }
 
+    /* Called every frame the layout is still moving. 4% of drift is under what
+     * reads as the camera moving and over what a settled layout jitters by. */
+    function trackExtent() {
+      if (!view.nodes.length) return;
+      const r = measureExtent();
+      if (extent && r < extent * 1.04 && r > extent * 0.96) return;
+      if (framed) applyScale(r);
+      else frameCamera();
+    }
+
     function flyTo(entityId) {
       const p = sim.pos.get(entityId);
       if (!p) return;
+      // Asking to go somewhere is a camera the user placed, even though no drag
+      // happened. Without this the follower reclaims it the moment the layout
+      // shifts, and a double-click during the first seconds does nothing.
+      framed = true;
       const target = new THREE.Vector3(p.x, p.y, p.z);
       const dir = camera.position.clone().sub(controls.target).normalize();
       const from = { t: controls.target.clone(), c: camera.position.clone() };
@@ -807,6 +888,9 @@
       camera.aspect = w / h;
       camera.updateProjectionMatrix();
       if (glow) glow.material.uniforms.scale.value = h;
+      // The fit distance is a function of the aspect ratio, so narrowing the
+      // window changes what "the whole graph" costs to see.
+      if (extent) { if (framed) applyScale(extent); else frameCamera(); }
     }
 
     new ResizeObserver(resize).observe(canvas);
@@ -814,18 +898,17 @@
 
     (function tick() {
       requestAnimationFrame(tick);
-      sim.step();
+      const moving = sim.step();
       syncGeometry();
-      if (!framed && view.nodes.length && sim.alpha < 0.05) {
-        framed = true;
-        frameCamera();
-      }
+      if (moving) trackExtent();
       controls.update();
       syncLabels();
       renderer.render(scene, camera);
     })();
 
-    return { rebuild, paint, flyTo, fit: () => { framed = true; frameCamera(); } };
+    // `f` resumes following rather than framing once: pressed while the layout is
+    // still inflating, a single fit would be out of date by the next second.
+    return { rebuild, paint, flyTo, fit: () => { framed = false; frameCamera(); } };
   })();
 
   // --- tooltip ---------------------------------------------------------------
