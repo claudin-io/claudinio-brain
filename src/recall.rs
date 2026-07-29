@@ -40,6 +40,10 @@ pub enum Channel {
     /// only channel that can answer with a fact stored nowhere near the words of
     /// the question.
     Graph,
+    /// Facts of entities that merely have something in common with what the
+    /// question names -- the same class, the same discount, the same owner. The
+    /// only channel that reaches something no edge connects.
+    Kin,
 }
 
 impl Channel {
@@ -48,6 +52,7 @@ impl Channel {
         Channel::Alias,
         Channel::Semantic,
         Channel::Graph,
+        Channel::Kin,
     ];
 
     /// The channels that retrieve from a fact's own content. The graph channel
@@ -182,18 +187,30 @@ impl Brain {
                 Channel::Bm25 => bm25_channel(conn, &q.text, &filter)?,
                 Channel::Alias => alias_channel(conn, &q.text, &filter)?,
                 Channel::Semantic => self.semantic_channel(&q.text, q)?,
-                Channel::Graph => unreachable!("the graph channel expands, it does not retrieve"),
+                Channel::Graph | Channel::Kin => {
+                    unreachable!("expansion channels expand, they do not retrieve")
+                }
             };
             fuse(&mut fused, ids, *channel);
         }
 
-        // The graph runs last because it expands what the others found. Its own
-        // anchors come first from the question, and only fall back to the fused
-        // head when the question names nothing the brain knows by name.
+        // The two expansion channels run last because they widen what the others
+        // found. Both take their anchors from the question first, and only fall
+        // back to the fused head when the question names nothing the brain knows.
+        let anchors = self.anchors(conn, q, &fused)?;
+
         if q.channels.contains(&Channel::Graph) {
-            let walk = self.walk(conn, q, &filter, &fused)?;
+            let walk = self.walk(conn, q, &filter, &anchors)?;
             fuse(&mut fused, walk.ranked.clone(), Channel::Graph);
             demote_bridges(&mut fused, &walk);
+        }
+
+        // Kinship after the walk, so an entity an edge already reached keeps the
+        // provenance that explains it best: being connected is a stronger reason
+        // to look somewhere than merely resembling.
+        if q.channels.contains(&Channel::Kin) {
+            let ids = kin_channel(conn, &anchors, &filter, &normalized_terms(&q.text))?;
+            fuse(&mut fused, ids, Channel::Kin);
         }
 
         let mut order: Vec<(i64, f64, Vec<Channel>)> = fused
@@ -268,27 +285,40 @@ fn demote_bridges(fused: &mut BTreeMap<i64, (f64, Vec<Channel>)>, walk: &Walk) {
 }
 
 impl Brain {
+    /// Where expansion starts.
+    ///
+    /// Anchoring on entities the question actually names is what keeps both
+    /// expansion channels precise: they start where the user pointed, not
+    /// wherever the ranking happened to land. Seeding from the fused head is the
+    /// fallback for a pure paraphrase, which names nothing the brain knows.
+    ///
+    /// Shared by the walk and by kinship on purpose. Two channels that expand
+    /// from different places would answer the same question about different
+    /// parts of the brain, and no ranking could reconcile that.
+    fn anchors(
+        &self,
+        conn: &Connection,
+        q: &RecallQuery,
+        fused: &BTreeMap<i64, (f64, Vec<Channel>)>,
+    ) -> std::result::Result<Vec<i64>, BrainError> {
+        let named = graph::named_entities(conn, &normalized_terms(&q.text))?;
+        if !named.is_empty() {
+            return Ok(named);
+        }
+        seed_entities(conn, fused)
+    }
+
     /// Expands outward from what the question names, and ranks what is out there.
     fn walk(
         &self,
         conn: &Connection,
         q: &RecallQuery,
         filter: &TemporalFilter,
-        fused: &BTreeMap<i64, (f64, Vec<Channel>)>,
+        anchors: &[i64],
     ) -> std::result::Result<Walk, BrainError> {
-        let terms = normalized_terms(&q.text);
-        let asked: BTreeSet<String> = terms.iter().cloned().collect();
+        let asked: BTreeSet<String> = normalized_terms(&q.text).into_iter().collect();
 
-        // Anchoring on entities the question actually names is what keeps this
-        // channel precise: the walk starts where the user pointed, not wherever
-        // the ranking happened to land. Seeding from the fused head is the
-        // fallback for a pure paraphrase, which names nothing the brain knows.
-        let mut anchors = graph::named_entities(conn, &terms)?;
-        if anchors.is_empty() {
-            anchors = seed_entities(conn, fused)?;
-        }
-
-        let n = graph::expand(conn, &anchors, filter, graph::MAX_DEPTH)?;
+        let n = graph::expand(conn, anchors, filter, graph::MAX_DEPTH)?;
         let reached = n.reached();
         let hop: BTreeMap<i64, u32> = reached.iter().copied().collect();
         let ids: Vec<i64> = reached.iter().map(|&(id, _)| id).collect();
@@ -316,6 +346,40 @@ impl Brain {
             asked,
         })
     }
+}
+
+/// Facts of entities that merely resemble the anchors, best first.
+///
+/// "Best" is the rarity of what they have in common, which is the whole design;
+/// see [`crate::kin`]. Within one entity the question's own vocabulary breaks the
+/// tie, exactly as it does for the walk: a question that asks about a discount
+/// should get the sibling's discount before the sibling's redemption count.
+fn kin_channel(
+    conn: &Connection,
+    anchors: &[i64],
+    filter: &TemporalFilter,
+    terms: &[String],
+) -> std::result::Result<Vec<i64>, BrainError> {
+    let kin = crate::kin::related(conn, anchors, filter)?;
+    if kin.is_empty() {
+        return Ok(Vec::new());
+    }
+    let asked: BTreeSet<&str> = terms.iter().map(String::as_str).collect();
+    let weight: BTreeMap<i64, f64> = kin.iter().map(|k| (k.entity_id, k.weight)).collect();
+    let ids: Vec<i64> = kin.iter().map(|k| k.entity_id).collect();
+
+    let mut candidates = crate::graph::facts_of(conn, &ids, filter)?;
+    candidates.sort_by(|a, b| {
+        let wa = weight.get(&a.entity_id).copied().unwrap_or(0.0);
+        let wb = weight.get(&b.entity_id).copied().unwrap_or(0.0);
+        wb.total_cmp(&wa)
+            .then(
+                (!asked.contains(a.predicate.as_str())).cmp(&!asked.contains(b.predicate.as_str())),
+            )
+            .then(a.fact_id.cmp(&b.fact_id))
+    });
+    candidates.truncate(CHANNEL_DEPTH);
+    Ok(candidates.into_iter().map(|c| c.fact_id).collect())
 }
 
 /// The entities behind the best hits so far, both ends of an edge included.

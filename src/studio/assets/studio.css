@@ -18,6 +18,11 @@
   --retracted: #f2617a;  /* never true */
   --future:    #9d8cff;  /* open, but not yet */
 
+  /* Deliberately outside the graph's vocabulary. A lint finding is not a state a
+     fact can be in, and borrowing --closed would make one colour mean two
+     things -- desaturated so it reads as a note rather than as an alarm. */
+  --finding:   #c8b06b;
+
   --ch-bm25:     #4ea3ff;
   --ch-alias:    #5ee0d0;
   --ch-semantic: #b98cff;
@@ -182,6 +187,17 @@ button, input, select { font: inherit; color: inherit; }
   margin-top: 9px; color: var(--dim); font-size: 12px; cursor: pointer;
 }
 .check input { accent-color: var(--open); margin: 0; }
+
+/* Findings, not errors. The brain works; it is less connected than its contents
+   deserve, which is worth reading rather than alarming about. */
+.health { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.health li {
+  display: flex; flex-direction: column; gap: 3px;
+  border-left: 2px solid var(--finding);
+  padding-left: 8px;
+}
+.health .health-head { font-size: 12px; color: var(--text); }
+.health small { color: var(--dimmer); font-size: 10px; line-height: 1.45; }
 
 .predicates { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
 .predicates li {

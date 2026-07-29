@@ -79,6 +79,9 @@ brain remember --subject release_1_4 --predicate freeze_date --value 2026-08-15
 
 - `--subject` is the thing, `--predicate` is the property, `--value` is the
   value. A bare number is stored as a number.
+- **If the value names something you could ask another question about, it is
+  `--entity`, not `--value`.** See [Relations](#relations) — this is the single
+  easiest way to write a fact the brain can never use.
 - `--at 2026-01-01` says when it became true in the world. Leave it off for
   "now". Use it whenever you learn something late — a backdated write slots into
   the timeline correctly instead of pretending it just happened.
@@ -110,8 +113,9 @@ brain history auth strategy                   # the whole trajectory
 ```
 
 Use `recall` when you do not know the exact subject and predicate — it takes a
-natural-language question and fuses four retrieval channels (words, entity
-names, meaning, and walking the graph):
+natural-language question and fuses five retrieval channels (words, entity names,
+meaning, walking the graph, and entities that merely have something in common
+with what you asked about):
 
 ```bash
 brain recall "how does the service authenticate" --json
@@ -136,6 +140,56 @@ This is what lets an answer live where the question's words never reach. Asking
 "which region does checkout_service data live in" finds `payments_db region
 eu-west-1`, one hop away, sharing no word with the question — and reaching an
 entity the question never named.
+
+### Connect what you write
+
+**The rule: if the value names something you could ask another question about,
+it is an entity.** A class, an owner, a supplier, a service, a category, a
+team. Only literals — numbers, dates, flags, one short sentence — are `--value`.
+
+```bash
+brain remember --subject voucher_x --predicate is_a --value  voucher_sazonal   # wrong
+brain remember --subject voucher_x --predicate is_a --entity voucher_sazonal   # right
+brain link voucher_x is_a voucher_sazonal                                      # same thing
+```
+
+The wrong one is dangerous precisely because it is not an error. It succeeds, it
+reads back correctly, `get` and `history` print it perfectly — and no walk of the
+graph can follow it, so the fact is invisible to the one channel that finds
+answers a question never named. In one real brain this happened to 59 of 69
+`is_a` facts: every voucher knew its class, and no voucher could be reached from
+it. Nothing failed for months.
+
+`is_a`, `depends_on`, `part_of`, `owned_by`, `runs_on`, `serves` and anything
+shaped like them are always relations. When in doubt, ask whether you would ever
+want `brain entity <that value> --neighbors` to return something. If yes, it is
+an entity.
+
+The brain learns this for itself: the first time a predicate is recorded with an
+entity object, later string values under it are resolved to entities too. So
+getting `is_a` right once fixes it going forward. Override with
+`brain predicate <name> --relational` or `--relational false`; a declared setting
+is never revised.
+
+Check yourself before finishing a session:
+
+```bash
+brain lint          # relations stored as strings, entities nothing can reach
+brain lint --strict # non-zero exit, for a CI step or a hook
+```
+
+If `lint` reports a predicate stored both ways, the facts already written stay as
+they are — inference only changes new ones. Fix those explicitly:
+
+```bash
+brain predicate is_a --relational      # say what it is
+brain repair --relations               # dry run: shows exactly what it would do
+brain repair --relations --apply       # link them
+```
+
+`repair` changes how a fact is stored, never what it says — the statement comes
+out byte-identical and nothing is retracted. If a claim was actually *wrong*,
+that is `retract`, not this.
 
 ## Correcting yourself
 
@@ -211,8 +265,8 @@ same operations with the same rules.
 ## Full command list
 
 ```
-init  where  stats  remember  link  get  recall  history
-entity  why  retract  alias  reindex  predicate
+init  where  stats  lint  remember  link  get  recall  history
+entity  why  retract  alias  reindex  predicate  repair
 ```
 
 `brain <command> --help` for the flags. `--brain <path>`, `--use <name>` and

@@ -17,11 +17,14 @@ pub mod embed;
 pub mod graph;
 pub mod ids;
 pub mod index;
+pub mod kin;
+pub mod lint;
 pub mod locate;
 #[cfg(feature = "mcp")]
 pub mod mcp;
 pub mod norm;
 pub mod recall;
+pub mod repair;
 pub mod store;
 #[cfg(feature = "studio")]
 pub mod studio;

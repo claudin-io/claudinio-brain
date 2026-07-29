@@ -62,6 +62,10 @@ pub enum Cmd {
     /// Report the brain's identity and contents.
     Stats,
 
+    /// Report what is structurally wrong: relations stored as strings,
+    /// entities nothing can reach, one thing living under two names.
+    Lint(LintArgs),
+
     /// Record a fact.
     Remember(RememberArgs),
 
@@ -108,12 +112,12 @@ pub enum Cmd {
     #[cfg(feature = "studio")]
     Studio(StudioArgs),
 
-    /// Fix a predicate's cardinality.
-    Predicate {
-        name: String,
-        #[arg(long, value_parser = parse_cardinality)]
-        cardinality: Cardinality,
-    },
+    /// Fix what a predicate is: how many values it holds, and whether its
+    /// object names a thing rather than being a literal.
+    Predicate(PredicateArgs),
+
+    /// Repair how facts are stored, without changing what they say.
+    Repair(RepairArgs),
 }
 
 #[derive(Args, Debug)]
@@ -163,6 +167,39 @@ pub struct LinkArgs {
     pub to: String,
     #[arg(long, value_name = "WHEN")]
     pub at: Option<String>,
+}
+
+#[derive(Args, Debug)]
+pub struct PredicateArgs {
+    pub name: String,
+
+    #[arg(long, value_parser = parse_cardinality)]
+    pub cardinality: Option<Cardinality>,
+
+    /// Whether the object names another entity. `--relational` turns it on,
+    /// `--relational false` pins it off so inference never turns it back on.
+    #[arg(long, num_args = 0..=1, default_missing_value = "true")]
+    pub relational: Option<bool>,
+}
+
+#[derive(Args, Debug)]
+pub struct RepairArgs {
+    /// Give relational predicates the entities their string objects only named.
+    #[arg(long)]
+    pub relations: bool,
+
+    /// Actually write. Without this the command reports what it would do and
+    /// changes nothing.
+    #[arg(long)]
+    pub apply: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct LintArgs {
+    /// Exit non-zero when anything is found, so an agent or a CI step can gate
+    /// on the brain staying connected.
+    #[arg(long)]
+    pub strict: bool,
 }
 
 #[derive(Args, Debug)]

@@ -1182,9 +1182,13 @@
     SNAP.predicates = next.predicates;
     SNAP.facts = next.facts;
     SNAP.generated_at = next.generated_at;
+    SNAP.lint = next.lint;
     ingest(SNAP);
     computeDomains();
     renderPredicates();
+    // An edit can close a finding or open one -- linking the last loose entity
+    // should empty this panel without a reload.
+    renderHealth();
     rebuildView();
   }
 
@@ -1512,6 +1516,60 @@
     }
   }
 
+  // The panel that explains the loose dots.
+  //
+  // A brain whose relations were written as strings looks, in here, exactly like
+  // a brain that simply has few relations -- a field of unconnected nodes, with
+  // nothing to say which it is. The findings come from the snapshot rather than
+  // being recomputed here, so this panel and `brain lint` can never disagree.
+  function renderHealth() {
+    const L = SNAP.lint;
+    if (!L) return;
+    const list = $('health-list');
+    const items = [];
+
+    for (const m of L.mixed_predicates || []) {
+      items.push({
+        n: m.as_text,
+        head: `${m.predicate} — ${m.as_text} stored as text, ${m.as_entity} as relation`,
+        note: m.examples.length
+          ? `the text ones point at nothing: ${m.examples.join(', ')}`
+          : 'the text ones are unreachable by any walk',
+      });
+    }
+    if ((L.candidate_classes || []).length) {
+      const top = L.candidate_classes.slice(0, 4)
+        .map((c) => `${c.value} (${c.entities})`).join(', ');
+      items.push({
+        n: L.candidate_classes.length,
+        head: `${L.candidate_classes.length} shared values that are not nodes`,
+        note: `several entities have these in common, and nothing can be reached through them: ${top}`,
+      });
+    }
+    if ((L.orphans || []).length) {
+      items.push({
+        n: L.orphans.length,
+        head: `${L.orphans.length} of ${L.entities} entities have no open relation`,
+        note: 'drawn here only while “show unlinked entities” is on',
+      });
+    }
+    for (const t of L.twins || []) {
+      items.push({
+        n: 1,
+        head: `${t.a} ↔ ${t.b}`,
+        note: `${t.distance} edit${t.distance === 1 ? '' : 's'} apart — possibly one thing under two names`,
+      });
+    }
+
+    $('health-panel').hidden = items.length === 0;
+    list.innerHTML = '';
+    for (const it of items) {
+      const li = document.createElement('li');
+      li.append(el('span', 'health-head', it.head), el('small', null, it.note));
+      list.append(li);
+    }
+  }
+
   function renderLegends() {
     const channels = [
       ['bm25', 'words, over FTS5'],
@@ -1594,6 +1652,7 @@
 
   renderLegends();
   renderPredicates();
+  renderHealth();
   rebuildView();
   updateReadout();
   setTimeout(() => { const h = document.querySelector('.hint'); if (h) h.style.opacity = '0'; }, 6000);

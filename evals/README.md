@@ -23,6 +23,13 @@ backdated writes, corrections, retractions, relations that changed.
 query and only appears by walking a relation. This suite is what justifies
 having a graph at all rather than a plain vector store.
 
+**`kin.jsonl`** — questions whose useful fact sits on an entity *nothing*
+connects to the one asked about: no edge, no shared words, only a value the two
+happen to hold in common. Where `graph.jsonl` justifies having a graph, this
+justifies looking past it — in a real brain almost nothing has an edge to its
+siblings, and twenty vouchers each recording `is_a voucher_sazonal` are a cohort
+nobody ever drew.
+
 **`alias.jsonl`** — questions that name something by a name the brain was never
 given. Two fields drive it: `aliases` declares one up front, and `asked` puts a
 question to the brain *with learning on* before the measured query, so the suite
@@ -40,9 +47,9 @@ decision to keep or cut a channel gets made -- notably whether the semantic
 channel in Passo 5 earns the ~8 MB of model weights it costs, and whether graph
 expansion in Passo 6 converts recall depth into precision.
 
-The `no-graph` row is `bm25+alias+semantic`: everything except traversal. It is
-permanent, not a one-off measurement, because it is the row the graph channel has
-to keep beating to justify staying.
+The `no-graph` row is everything except traversal, and `no-kin` is everything
+except kinship. Both are permanent, not one-off measurements, because they are the
+rows those channels have to keep beating to justify staying.
 
 ## What these suites cannot measure
 
@@ -64,6 +71,34 @@ demotes a traversed *edge* for exactly this reason; nothing yet demotes the
 anchor's unrelated facts. Fixing it means introducing a second demotion factor
 and tuning it until one visible case flips, which is the overfitting the
 anti-overfit rule exists to prevent.
+
+### What kinship bought
+
+| kin suite | R@1 | R@5 | R@10 | MRR | top-1 |
+|---|---|---|---|---|---|
+| `no-kin` | 0.417 | 0.958 | 1.000 | 0.875 | 0.750 |
+| `all` | **0.667** | 0.958 | 1.000 | **1.000** | **1.000** |
+
+Nothing moves on `retrieval`, `temporal` or `graph` — not one figure — which is
+the shape a channel that expands rather than answers should have.
+
+The instructive part is *which* numbers moved. R@5 and R@10 are identical with
+the channel off, so the lateral facts were reachable the whole time and what
+kinship supplies is precision, not depth. That is the same story as traversal in
+Passo 6, and it is worth stating because the opposite was the guess going in:
+"reaches things nothing connects" sounds like a recall feature and measured as a
+ranking one.
+
+`kin` alone scores 0.048 and 0.050 on `temporal` and `retrieval`. That is correct
+and not a defect — kinship answers no question by itself, it only says where else
+to look, and a suite of direct questions is exactly where that is worth nothing.
+
+One case is left wrong on purpose: *a property the anchor does not have, on a
+voucher sharing its discount*. The lateral fact is found and the anchor's own
+unrelated fact still outranks it, which is the same structural gap `alias.jsonl`
+documents above — three channels agree on the entity the question named, and
+nothing yet demotes that entity's irrelevant facts. Fixing it means a second
+demotion factor tuned until a visible case flips.
 
 ## Baseline as of Passo 7 (lexical + semantic + graph + names)
 

@@ -111,7 +111,7 @@ nomeada, e a relação é o mapa até lá.
 
 ## Como o recall funciona
 
-Quatro canais independentes buscam candidatos, e *reciprocal rank fusion*
+Cinco canais independentes buscam candidatos, e *reciprocal rank fusion*
 combina os resultados. Fundir em vez de escolher um é o ponto: concordância
 entre sinais independentes é, por si só, evidência.
 
@@ -121,6 +121,15 @@ entre sinais independentes é, por si só, evidência.
 | **alias** | entidades que a pergunta nomeia diretamente, pela chave ou por outro nome. |
 | **semantic** | paráfrases, via embeddings estáticos compilados no binário. |
 | **graph** | fatos alcançados caminhando pelas relações a partir do que foi nomeado. |
+| **kin** | fatos de entidades que apenas têm algo *em comum* com ela. |
+
+O último existe porque quase nada num brain real tem aresta para os próprios
+irmãos. Vinte vouchers, cada um registrando `is_a voucher_sazonal`, formam uma
+coorte que ninguém desenhou. Duas entidades são parentes quando têm o mesmo par
+`(predicado, objeto)` — sem aresta nenhuma, e o valor pode ser texto puro. A
+raridade é o que ordena: um par que cinco entidades compartilham diz muito mais
+sobre qual delas importa do que um que vinte e duas compartilham, e é a
+frequência inversa que separa os dois.
 
 Tudo é filtrado temporalmente *antes* do ranqueamento, então o recall responde
 com o que é verdade, não com tudo que já foi registrado. Um fato retratado não
@@ -270,7 +279,7 @@ Um grafo sobre duas linhas do tempo não se lê bem como lista. O `brain studio`
 abre um deles no navegador, em 3D, servido do localhost:
 
 ![O studio: o grafo 3D do brain de uma torrefação, o trace do recall mostrando
-qual dos quatro canais achou cada resultado, o inspetor com os fatos e os nomes
+qual dos cinco canais achou cada resultado, o inspetor com os fatos e os nomes
 de um fornecedor, e o plano bitemporal embaixo](docs/studio.png)
 
 ```bash
@@ -301,7 +310,7 @@ diferentes. Uma supersessão é uma barra que para e outra começando mais acima
 Uma correção é uma barra riscada sem nada tomando o lugar dela. Uma reafirmação
 é uma barra que engrossou em vez de uma segunda barra aparecendo.
 
-**O trace do recall.** Faça uma pergunta e os quatro canais colorem os nós que
+**O trace do recall.** Faça uma pergunta e os canais colorem os nós que
 surfaram, com os canais e o score fundido ao lado de cada resultado. Um fato em
 que vários canais concordam sai na média das cores deles — que é exatamente a
 concordância que o RRF premia, visível. Na imagem acima, "de que pais vem o
@@ -390,7 +399,7 @@ cargo run --example eval                      # mede e falha em regressão
 cargo run --example eval -- --misses          # ...e nomeia os casos ainda errados
 ```
 
-Quatro suítes — retrieval, temporal, graph, alias — cada uma pontuada contra
+Cinco suítes — retrieval, temporal, graph, alias, kin — cada uma pontuada contra
 cada canal isolado e fundido, para que a contribuição marginal de um canal seja
 um número e não uma opinião. `evals/baseline.json` é versionado e o CI falha em
 regressão, o que significa que melhorar um número exige atualizar a baseline no
@@ -405,7 +414,7 @@ Pré-1.0. O formato em disco ainda não é estável e não há caminho de migra�
 entre versões de schema.
 
 Construído e funcionando: o store selado e a escada de resolução, o modelo
-bitemporal de fatos, os quatro canais de recall, nomes declarados e aprendidos, o
+bitemporal de fatos, os cinco canais de recall, nomes declarados e aprendidos, o
 servidor MCP e o studio. Quatro superfícies — o CLI, o servidor MCP, o studio e a
 biblioteca Rust — todas sobre um núcleo só, então o que um agente vê é exatamente
 o que o `brain recall` te mostra e exatamente o que o grafo desenha.

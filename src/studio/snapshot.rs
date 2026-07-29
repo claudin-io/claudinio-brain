@@ -37,6 +37,15 @@ pub struct Snapshot {
     pub entities: Vec<SnapEntity>,
     pub predicates: Vec<SnapPredicate>,
     pub facts: Vec<SnapFact>,
+    /// What is structurally wrong with this brain.
+    ///
+    /// Computed here rather than in the browser so the page and `brain lint`
+    /// can never disagree about what counts as a defect, and so a static export
+    /// -- which has no API to ask -- carries the same diagnosis as a live one.
+    /// The studio exists to look at brains that have something wrong with them;
+    /// leaving the reader to infer it from loose dots is how the motivating bug
+    /// stayed invisible for 59 facts.
+    pub lint: crate::lint::Report,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -117,6 +126,7 @@ impl Snapshot {
             entities: entities(conn)?,
             predicates: predicates(conn)?,
             facts: facts(conn)?,
+            lint: crate::lint::check(conn)?,
         })
     }
 
