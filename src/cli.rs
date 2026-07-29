@@ -230,6 +230,12 @@ pub struct RecallArgs {
     #[arg(long)]
     pub scope: Option<String>,
 
+    /// Keep a namespace out of the answer. Use it to stop something high-churn --
+    /// a task list, a run of build states -- from competing with the durable
+    /// knowledge on questions that have nothing to do with it.
+    #[arg(long = "not-scope", value_name = "SCOPE")]
+    pub not_scope: Option<String>,
+
     /// Let the brain keep the name this question used, if the answer is
     /// unambiguous. Off by default: a read that writes is a read that cannot be
     /// replayed.

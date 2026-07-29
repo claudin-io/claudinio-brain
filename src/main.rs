@@ -208,6 +208,9 @@ fn cmd_recall(args: &RecallArgs, cli: &Cli, ctx: &Ctx) -> anyhow::Result<()> {
     if let Some(s) = &args.scope {
         q = q.scope(s);
     }
+    if let Some(s) = &args.not_scope {
+        q = q.not_scope(s);
+    }
 
     let b = open(cli, ctx)?;
     let hits = b.recall(&q)?;

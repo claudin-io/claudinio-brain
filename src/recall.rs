@@ -79,6 +79,8 @@ pub struct RecallQuery {
     pub when: When,
     pub limit: usize,
     pub scope: Option<String>,
+    /// A namespace to keep *out* of the answer.
+    pub not_scope: Option<String>,
     pub channels: Vec<Channel>,
 }
 
@@ -89,6 +91,7 @@ impl RecallQuery {
             when: When::Now,
             limit: 10,
             scope: None,
+            not_scope: None,
             channels: Channel::ALL.to_vec(),
         }
     }
@@ -110,6 +113,11 @@ impl RecallQuery {
 
     pub fn scope(mut self, s: impl Into<String>) -> Self {
         self.scope = Some(s.into());
+        self
+    }
+
+    pub fn not_scope(mut self, s: impl Into<String>) -> Self {
+        self.not_scope = Some(s.into());
         self
     }
 
@@ -722,6 +730,16 @@ impl Brain {
                 break;
             }
             let f = self.fact(id)?;
+
+            // `scope` is a vec0 partition key, which indexes equality and cannot
+            // express an exclusion, so this one is applied here -- where the fact
+            // is loaded anyway for the temporal re-check below.
+            if let Some(excluded) = &q.not_scope
+                && f.scope.as_deref() == Some(excluded.as_str())
+            {
+                continue;
+            }
+
             let keep = match q.when {
                 // `covers`, not `is_open`: the flag the index narrowed on says a
                 // fact was not over when it was written, which is not the same as
@@ -763,11 +781,30 @@ pub(crate) struct TemporalFilter {
     sql: String,
     at: Option<i64>,
     scope: Option<String>,
+    not_scope: Option<String>,
 }
 
 impl TemporalFilter {
     pub(crate) fn new(q: &RecallQuery, now: Timestamp) -> Self {
-        Self::for_when(q.when, now, q.scope.clone())
+        Self::for_when(q.when, now, q.scope.clone()).excluding(q.not_scope.clone())
+    }
+
+    /// Keeps a namespace out of the answer.
+    ///
+    /// The counterweight to `scope`, which could only ever narrow *inward*: a brain
+    /// holding something high-churn -- a task list, a run of build states -- had no
+    /// way to keep it from competing with the durable knowledge on every unrelated
+    /// question. Nothing is deleted here, so without this the noise is permanent and
+    /// it is in the same two indexes everything else is searched through.
+    pub(crate) fn excluding(mut self, not_scope: Option<String>) -> Self {
+        if not_scope.is_some() {
+            // `IS NULL OR <>` rather than `<>` alone: a fact with no scope is in no
+            // namespace, so it cannot be in the one being excluded -- and `NULL <> x`
+            // is NULL, which would quietly drop every unscoped fact in the brain.
+            self.sql.push_str(" AND (f.scope IS NULL OR f.scope <> ?n)");
+            self.not_scope = not_scope;
+        }
+        self
     }
 
     /// `now` is what [`When::Now`] resolves to.
@@ -794,11 +831,16 @@ impl TemporalFilter {
         if scope.is_some() {
             sql.push_str(" AND f.scope = ?s");
         }
-        Self { sql, at, scope }
+        Self {
+            sql,
+            at,
+            scope,
+            not_scope: None,
+        }
     }
 
-    /// Rewrites the named markers (`?a`, `?s`) into plain positional `?`, pushing
-    /// each value onto `into` in the order SQLite will read them.
+    /// Rewrites the named markers (`?a`, `?s`, `?n`) into plain positional `?`,
+    /// pushing each value onto `into` in the order SQLite will read them.
     ///
     /// Named markers exist only so the fragment above stays readable: `?a`
     /// appears twice in the as-of clause, and tracking that by hand against a
@@ -813,6 +855,7 @@ impl TemporalFilter {
             match &rest[i..i + 2] {
                 "?a" => into.push(self.at.unwrap_or_default().into()),
                 "?s" => into.push(self.scope.clone().unwrap_or_default().into()),
+                "?n" => into.push(self.not_scope.clone().unwrap_or_default().into()),
                 other => unreachable!("unknown filter marker {other}"),
             }
             rest = &rest[i + 2..];

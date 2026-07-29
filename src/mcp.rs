@@ -192,6 +192,12 @@ pub struct RecallParams {
     pub limit: Option<usize>,
     #[serde(default)]
     pub scope: Option<String>,
+    /// A namespace to keep *out* of the answer. Reach for it when the brain holds
+    /// something high-churn -- a task list, a series of build states -- and the
+    /// question has nothing to do with it: nothing is ever deleted here, so that
+    /// noise sits in the same index as everything else forever.
+    #[serde(default)]
+    pub not_scope: Option<String>,
     /// Let the brain keep the name this question used for the thing it found,
     /// if the answer was unambiguous. Off by default. Turn it on only when the
     /// question came from a person, never when it came from your own paraphrase
@@ -499,6 +505,9 @@ impl BrainServer {
         }
         if let Some(s) = &p.scope {
             q = q.scope(s);
+        }
+        if let Some(s) = &p.not_scope {
+            q = q.not_scope(s);
         }
 
         let (hits, learned) = self.with(|b| {
