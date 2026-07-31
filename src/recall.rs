@@ -58,6 +58,23 @@ impl Channel {
     /// The channels that retrieve from a fact's own content. The graph channel
     /// is not one of them: it expands what these find.
     const CONTENT: &'static [Channel] = &[Channel::Bm25, Channel::Alias, Channel::Semantic];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Bm25 => "bm25",
+            Self::Alias => "alias",
+            Self::Semantic => "semantic",
+            Self::Graph => "graph",
+            Self::Kin => "kin",
+        }
+    }
+
+    /// The names an agent is allowed to type. Matched against [`Self::as_str`]
+    /// rather than against a second list, so the two can never disagree about
+    /// what a channel is called.
+    pub fn parse(s: &str) -> Option<Self> {
+        Self::ALL.iter().copied().find(|c| c.as_str() == s)
+    }
 }
 
 /// How the timeline is filtered.
@@ -264,6 +281,107 @@ const OFF_TOPIC_DEMOTION: f64 = 0.5;
 /// stronger verdict, and the difference should not be blurred.
 const UNASKED_PREDICATE_DEMOTION: f64 = 0.5;
 
+/// What a fused score is multiplied by when the question names a term the brain
+/// almost never uses and this fact does not contain it.
+///
+/// This is [`OFF_TOPIC_DEMOTION`] for a question that names no entity, and it
+/// exists because that rule is inert exactly when it is needed most. A question
+/// like `_normalize_email` points at nothing the brain has a name for, so there
+/// is no neighbourhood, so nothing can be off its topic -- and meanwhile the
+/// semantic channel has answered anyway, because a vector index always answers.
+/// Traversal and kinship then expand from *those* hits, and the result is three
+/// channels agreeing about a fact that has nothing to do with the question while
+/// the one fact containing the term has a single vote from BM25.
+///
+/// That is not hypothetical. On a 566-fact brain, `recall "_normalize_email"`
+/// returned `v2_starter yearly_discount 18 percent` first and put the record that
+/// literally contains the identifier at **rank 12** -- past the default limit,
+/// therefore invisible. The agent that hit it went and read the SQLite file by
+/// hand, which is the honest verdict on a retrieval system.
+///
+/// A rare term is the address such a question has. Nothing arrives at a term the
+/// brain uses three times by resembling something; it arrives by being about it.
+/// So a fact that contains none of the question's rare terms is here on the
+/// weakest evidence there is, and goes below the facts that do.
+///
+/// Inert three ways, all of them load-bearing:
+///
+/// - **The question named an entity.** Then it has a real address and
+///   [`OFF_TOPIC_DEMOTION`] is the rule that applies; two rules pushing on the
+///   same contest would just be one rule with an unexamined constant.
+/// - **No term is rare.** A question made of common words says nothing specific
+///   enough to demote anything for missing.
+/// - **A rare term matches nothing.** Every candidate takes the factor, and a
+///   uniform multiplication leaves the ranking exactly where it was.
+///
+/// The gate on `from_question` is not tidiness, it is what keeps this from
+/// fighting [`BRIDGE_DEMOTION`]. "de que pais vem o produto_a" names an entity;
+/// the answer (`acme pais brasil`) does not contain `produto_a` while the bridge
+/// that was crossed to reach it does. Ungated, this rule would promote the road
+/// over the destination -- the precise failure the graph suite exists to catch.
+///
+/// Swept, with the same verdict the two rules above got: 1.0 is the only value
+/// that changes anything.
+///
+/// | rare-term miss | retrieval R@1 | retrieval top-1 |
+/// |---|---|---|
+/// | 1.00 (off) | 0.865 | 0.885 |
+/// | 0.95 | **0.942** | **0.962** |
+/// | 0.75 | 0.942 | 0.962 |
+/// | **0.50** | 0.942 | 0.962 |
+/// | 0.25 | 0.942 | 0.962 |
+///
+/// Nothing moves on `temporal`, `graph`, `alias`, `kin` or the holdout at any
+/// setting -- including 1.0. That is the shape this rule should have: it fires
+/// only where a question points at no entity, and those four suites are made of
+/// questions that point at one.
+///
+/// The holdout says the weaker of the two things a holdout can say. It does not
+/// move, so this breaks nothing on 24 cases nobody tuned against; it does not
+/// improve either, because it holds no case of this shape. That is not the same
+/// as generalizing, and the difference should not be blurred -- see the same
+/// distinction drawn for [`UNASKED_PREDICATE_DEMOTION`].
+///
+/// 0.5 rather than the equally-scoring 0.95, for the reason given on
+/// [`OFF_TOPIC_DEMOTION`]: these contests are RRF near-ties, a near-tie yields to
+/// any nudge at all, and a factor that only works when the margin is already
+/// negligible stops working as the brain grows. On the 566-fact brain this was
+/// found in, the losing fact trailed by 34%, not by 5%.
+const RARE_TERM_MISS_DEMOTION: f64 = 0.5;
+
+/// How many facts a term may appear in and still count as rare.
+///
+/// An absolute count rather than a share of the brain, because the property that
+/// matters is absolute: a term appearing in three facts identifies those three
+/// facts, whether the brain holds fifty or fifty thousand. A share would make the
+/// same term rare in a big brain and common in a small one, which inverts the
+/// intent -- in a small brain there is even less room for a coincidence.
+///
+/// **The suites cannot price this one, and this comment does not pretend they
+/// can.** Sweeping 1/3/5/10/20 moves no figure on any suite including the
+/// holdout, for a reason that is structural rather than lucky: an eval brain
+/// holds around thirty facts, so every term in it is under twenty and every
+/// setting selects the same terms. All the sweep establishes is that no value
+/// breaks anything.
+///
+/// 5 comes from the brain the failure was found in, where the numbers are real:
+/// the tokens of `_normalize_email` appear in 1 and 5 facts out of 566, while the
+/// common words of an ordinary question appear in dozens. The gap is wide enough
+/// that anything from 1 to about 20 would have selected the same terms there too
+/// -- which is the honest reason to stop worrying about the exact value, and the
+/// reason to revisit it against a real brain rather than against these suites if
+/// it ever misbehaves.
+const RARE_TERM_MAX_FACTS: i64 = 5;
+
+/// How many of a question's terms are priced for rarity.
+///
+/// A bound on work, not a quality setting, in the same spirit as
+/// [`MAX_QUERY_WORDS`]: each term costs one indexed count, and a question does
+/// not need sixteen distinct words to have said what it is about. Terms past the
+/// cut are dropped in order rather than sampled, so the same text always asks the
+/// same question.
+const MAX_RARITY_TERMS: usize = 16;
+
 /// Minimum cosine similarity for a semantic hit to count.
 ///
 /// Nearest-neighbour search always returns *something* -- there is no such thing
@@ -333,7 +451,7 @@ impl Brain {
             fuse(&mut fused, ids, Channel::Kin);
         }
 
-        self.refocus(conn, &mut fused, &focus, &normalized_terms(&q.text))?;
+        self.refocus(conn, &mut fused, &focus, &q.text)?;
 
         let mut order: Vec<(i64, f64, Vec<Channel>)> = fused
             .into_iter()
@@ -480,11 +598,17 @@ impl Brain {
 
     /// Pushes down what the question did not ask for.
     ///
-    /// Two independent rules, both multiplicative on the fused score and both
+    /// Three independent rules, all multiplicative on the fused score and all
     /// inert unless the question said something specific enough to apply them:
-    /// see [`OFF_TOPIC_DEMOTION`] and [`UNASKED_PREDICATE_DEMOTION`]. A fact can
-    /// take both, which is correct -- an unrelated entity's unrelated predicate
-    /// is wrong twice.
+    /// see [`OFF_TOPIC_DEMOTION`], [`UNASKED_PREDICATE_DEMOTION`] and
+    /// [`RARE_TERM_MISS_DEMOTION`]. A fact can take more than one, which is
+    /// correct -- an unrelated entity's unrelated predicate is wrong twice.
+    ///
+    /// The first and third never fire together, by construction: one applies when
+    /// the question named an entity and the other when it did not. They are the
+    /// same idea -- *a fact that arrived by resemblance ranks below one that
+    /// arrived by address* -- reading the address off whichever the question
+    /// actually supplied.
     ///
     /// Deliberately a re-rank of the fused set rather than a filter on it.
     /// Nothing is removed, because every one of these signals is a guess about
@@ -495,10 +619,16 @@ impl Brain {
         conn: &Connection,
         fused: &mut BTreeMap<i64, (f64, Vec<Channel>)>,
         focus: &Focus,
-        terms: &[String],
+        text: &str,
     ) -> std::result::Result<(), BrainError> {
-        let asked = named_predicates(conn, terms)?;
-        if fused.is_empty() || (asked.is_empty() && !focus.from_question) {
+        let asked = named_predicates(conn, &normalized_terms(text))?;
+        // Only looked up when it could apply, so a question with an address pays
+        // nothing for a rule that would be inert anyway.
+        let rare = match focus.from_question {
+            true => None,
+            false => rare_term_hits(conn, text)?,
+        };
+        if fused.is_empty() || (asked.is_empty() && !focus.from_question && rare.is_none()) {
             return Ok(());
         }
 
@@ -515,6 +645,9 @@ impl Brain {
             }
             if !asked.is_empty() && !asked.contains(&shape.predicate) {
                 *score *= UNASKED_PREDICATE_DEMOTION;
+            }
+            if rare.as_ref().is_some_and(|hits| !hits.contains(id)) {
+                *score *= RARE_TERM_MISS_DEMOTION;
             }
         }
         Ok(())
@@ -567,6 +700,59 @@ impl Brain {
             asked,
         })
     }
+}
+
+/// The facts containing any term the question uses and the brain barely does.
+///
+/// `None` means the rule does not apply: the question has no rare term, so
+/// nothing may be demoted for missing one. An empty set is a different answer and
+/// a legitimate one -- every rare term matched something once, and the fused
+/// candidates simply are not those facts.
+///
+/// Rarity is measured against the whole brain rather than against the temporally
+/// filtered answer set, on purpose. It is a property of the *vocabulary* -- how
+/// unusual a word is here -- and a word does not become distinctive because the
+/// facts using it happen to have closed.
+///
+/// Both queries go through `fact_fts`, so "contains" means exactly what the BM25
+/// channel means by it, accents and stemming included. A rule that decided
+/// containment differently from the channel it is arbitrating would be settling
+/// the argument with a third opinion.
+fn rare_term_hits(
+    conn: &Connection,
+    text: &str,
+) -> std::result::Result<Option<BTreeSet<i64>>, BrainError> {
+    let mut seen = BTreeSet::new();
+    let terms: Vec<String> = fts_terms(text)
+        .into_iter()
+        .filter(|t| seen.insert(t.clone()))
+        .take(MAX_RARITY_TERMS)
+        .collect();
+    if terms.is_empty() {
+        return Ok(None);
+    }
+
+    let mut count = conn.prepare("SELECT count(*) FROM fact_fts WHERE fact_fts MATCH ?")?;
+    let mut rare = Vec::new();
+    for t in &terms {
+        let n: i64 = count.query_row([format!("\"{t}\"")], |r| r.get(0))?;
+        // Zero is not rare, it is absent. A term the brain has never seen
+        // describes no facts, so it cannot say which ones are on topic -- and
+        // treating it as maximally rare would demote the entire candidate set for
+        // a typo.
+        if (1..=RARE_TERM_MAX_FACTS).contains(&n) {
+            rare.push(format!("\"{t}\""));
+        }
+    }
+    if rare.is_empty() {
+        return Ok(None);
+    }
+
+    let mut stmt = conn.prepare("SELECT rowid FROM fact_fts WHERE fact_fts MATCH ?")?;
+    let hits = stmt
+        .query_map([rare.join(" OR ")], |r| r.get(0))?
+        .collect::<rusqlite::Result<BTreeSet<i64>>>()?;
+    Ok(Some(hits))
 }
 
 /// The terms of a question that are predicate keys the brain already holds.
@@ -985,6 +1171,27 @@ pub(crate) fn normalized_terms(text: &str) -> Vec<String> {
     out
 }
 
+/// The searchable words of a question, split the way FTS5 splits them.
+///
+/// Shared by the BM25 channel and by the rarity rule so the two cannot disagree
+/// about what a term is -- a rule that arbitrates a channel has to be counting
+/// the same things the channel matched on.
+///
+/// Quotes are stripped rather than escaped: they are punctuation here, and a term
+/// carrying one would reopen the syntax hole [`fts_query`] closes.
+fn fts_terms(text: &str) -> Vec<String> {
+    text.split(|c: char| !c.is_alphanumeric())
+        .filter(|t| !t.is_empty())
+        .take(MAX_QUERY_WORDS)
+        // Single characters carry almost no signal in Latin scripts and blow up
+        // the candidate set. Non-ASCII single characters are kept: one CJK
+        // character is a word.
+        .filter(|t| t.chars().count() > 1 || !t.is_ascii())
+        .map(|t| t.replace('"', ""))
+        .filter(|t| !t.is_empty())
+        .collect()
+}
+
 /// Builds an FTS5 MATCH expression from free text.
 ///
 /// Every token is quoted, which makes FTS5 treat it as a literal string rather
@@ -992,15 +1199,9 @@ pub(crate) fn normalized_terms(text: &str) -> Vec<String> {
 /// bare `NEAR(`, or even the word "AND" would be a query-syntax error surfacing
 /// to the user as a brain failure.
 fn fts_query(text: &str) -> Option<String> {
-    let terms: Vec<String> = text
-        .split(|c: char| !c.is_alphanumeric())
-        .filter(|t| !t.is_empty())
-        .take(MAX_QUERY_WORDS)
-        // Single characters carry almost no signal in Latin scripts and blow up
-        // the candidate set. Non-ASCII single characters are kept: one CJK
-        // character is a word.
-        .filter(|t| t.chars().count() > 1 || !t.is_ascii())
-        .map(|t| format!("\"{}\"", t.replace('"', "")))
+    let terms: Vec<String> = fts_terms(text)
+        .into_iter()
+        .map(|t| format!("\"{t}\""))
         .collect();
 
     if terms.is_empty() {

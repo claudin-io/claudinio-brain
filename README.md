@@ -175,6 +175,10 @@ not a transformer. No ONNX runtime, no download, no C++ toolchain, and no
 sampling, which is what makes recall reproducible enough for the eval baselines
 to exist at all.
 
+`--channels bm25` narrows a question to one retriever. That is how a surprising
+ranking gets explained: comparing it against the full answer says whether a hit
+was found by its words or inferred from something else.
+
 ## Asking about a set
 
 `get` needs a subject and `recall` guesses at one, so neither can answer *which
@@ -226,6 +230,47 @@ One trap worth naming. `brain lint` will notice that several tasks share
 through it. Don't: traversal deliberately refuses to expand *through* a
 high-degree hub, so the graph answer works up to about fifty tasks and then
 silently returns nothing at all. That is the failure `which` exists to replace.
+
+## Searching the content
+
+`recall` answers a question and `which` answers about a set. Neither answers
+*which records mention this string* — an identifier, a file path, a phrase
+somebody used — and that is what anyone gathering evidence is actually asking.
+Left missing, it is the question that sends an agent to open the SQLite file and
+grep it by hand.
+
+```console
+$ brain find _normalize_email
+trial regra_de_migracao mudar _normalize_email exige rodar scripts/migrate_trial_locks.py
+
+$ brain find PRIDAY          # inside a token, where an index cannot look
+cupom_x codigo FEEDBACK25-PRIDAYFARELYA
+
+$ brain find "context reset" # a phrase stays a phrase, not either word
+```
+
+Two stages, unioned, and every hit reports which of them found it. The FTS5 index
+matches a whole token or a token prefix — accent- and case-insensitive and
+stemmed, so `preco` finds `preço` — and a folded substring scan finds a fragment
+from the middle of a token, which is what identifiers are made of. The needle
+stays literal throughout: `_` and `%` are characters here, not wildcards. Like
+`which` and unlike `recall`, the answer carries `matched`, so a cut is visible
+rather than assumed.
+
+`which` starts from a predicate key, and a brain's vocabulary is learned rather
+than declared — so there has to be a way to ask what it has learned:
+
+```console
+$ brain predicates
+status                   single   literal   12 facts, 12 subjects
+owner                    single   relation  4 facts, 4 subjects
+is_a                     single   relation  3 facts, 3 subjects
+```
+
+Ordered by weight, because the first question anyone has of an unfamiliar brain
+is what it is mostly made of. The `relation` / `literal` column is the one
+`brain lint` reports on: a predicate that obviously names a thing and says
+`literal` stores and reads back perfectly, and no walk of the graph can follow it.
 
 ## Names
 
@@ -341,7 +386,10 @@ remember   Record a fact
 link       Record a relation between two entities
 get        Read the current value, or the value at a past instant
 recall     Search the brain with a natural-language question
+find       List every record whose text contains a string
 which      List which subjects hold a predicate, and what the value is
+predicates List the properties this brain records, and how much it holds under
+           each
 history    Show the full trajectory of a subject/predicate pair
 entity     Show what is known about an entity, and what it connects to
 why        Show where a fact came from and what became of it
@@ -446,8 +494,8 @@ which is what stops DNS rebinding from making the token travel for free.
 ## MCP
 
 `brain serve` speaks MCP over stdio, so an agent can use a brain as a tool
-surface. Nine tools: `remember`, `link`, `recall`, `get`, `history`, `entity`,
-`why`, `retract`, `alias`.
+surface. Twelve tools: `remember`, `link`, `recall`, `find`, `predicates`,
+`which`, `get`, `history`, `entity`, `why`, `retract`, `alias`.
 
 ```json
 {

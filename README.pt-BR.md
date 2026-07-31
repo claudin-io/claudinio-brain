@@ -177,6 +177,10 @@ token-para-vetor, não um transformer. Sem runtime ONNX, sem download, sem
 toolchain C++ e sem amostragem, que é o que torna o recall reproduzível o
 bastante para as baselines de eval existirem.
 
+`--channels bm25` restringe uma pergunta a um único recuperador. É assim que um
+ranqueamento surpreendente é explicado: comparar com a resposta completa diz se
+um resultado foi achado pelas palavras dele ou inferido de outra coisa.
+
 ## Perguntando sobre um conjunto
 
 O `get` precisa de um sujeito e o `recall` chuta um, então nenhum dos dois
@@ -229,6 +233,49 @@ alcançar coisas através dele. Não faça: a travessia se recusa de propósito 
 expandir *através* de um hub de grau alto, então a resposta via grafo funciona até
 umas cinquenta tarefas e depois volta silenciosamente vazia. É essa a falha que o
 `which` existe para substituir.
+
+## Buscando no conteúdo
+
+O `recall` responde uma pergunta e o `which` responde sobre um conjunto. Nenhum
+dos dois responde *quais registros mencionam esta string* — um identificador, um
+caminho de arquivo, uma frase que alguém usou — e é isso que quem está juntando
+evidência realmente pergunta. Faltando, é a pergunta que faz um agente abrir o
+arquivo SQLite e dar grep nele na mão.
+
+```console
+$ brain find _normalize_email
+trial regra_de_migracao mudar _normalize_email exige rodar scripts/migrate_trial_locks.py
+
+$ brain find PRIDAY          # no meio de um token, onde um índice não olha
+cupom_x codigo FEEDBACK25-PRIDAYFARELYA
+
+$ brain find "context reset" # uma frase continua uma frase, não cada palavra
+```
+
+Dois estágios, unidos, e cada resultado diz qual deles o achou. O índice FTS5 casa
+um token inteiro ou um prefixo de token — sem acento, sem caixa e com stemming,
+então `preco` acha `preço` — e uma varredura de substring dobrada acha um pedaço
+do meio de um token, que é do que identificadores são feitos. A agulha continua
+literal o tempo todo: `_` e `%` aqui são caracteres, não curingas. Como o `which`
+e ao contrário do `recall`, a resposta carrega `matched`, então um corte fica
+visível em vez de suposto.
+
+O `which` parte de uma chave de predicado, e o vocabulário de um brain é aprendido
+em vez de declarado — então tem que haver um jeito de perguntar o que ele
+aprendeu:
+
+```console
+$ brain predicates
+status                   single   literal   12 facts, 12 subjects
+owner                    single   relation  4 facts, 4 subjects
+is_a                     single   relation  3 facts, 3 subjects
+```
+
+Ordenado por peso, porque a primeira pergunta que qualquer um tem de um brain
+desconhecido é do que ele é feito na maior parte. A coluna `relation` / `literal`
+é a que o `brain lint` reporta: um predicado que obviamente nomeia uma coisa e diz
+`literal` guarda e lê de volta perfeitamente, e nenhuma caminhada no grafo
+consegue segui-lo.
 
 ## Nomes
 
@@ -347,7 +394,10 @@ remember   Registra um fato
 link       Registra uma relação entre duas entidades
 get        Lê o valor atual, ou o valor num instante passado
 recall     Busca no brain com uma pergunta em linguagem natural
+find       Lista todo registro cujo texto contém uma string
 which      Lista quais sujeitos têm um predicado, e qual é o valor
+predicates Lista as propriedades que este brain registra, e quanto ele guarda
+           sob cada uma
 history    Mostra a trajetória completa de um par sujeito/predicado
 entity     Mostra o que se sabe de uma entidade, e a que ela se conecta
 why        Mostra de onde um fato veio e o que aconteceu com ele
@@ -455,8 +505,8 @@ fazer o token viajar de graça.
 ## MCP
 
 `brain serve` fala MCP sobre stdio, então um agente pode usar um brain como
-superfície de ferramentas. Nove: `remember`, `link`, `recall`, `get`, `history`,
-`entity`, `why`, `retract`, `alias`.
+superfície de ferramentas. Doze: `remember`, `link`, `recall`, `find`,
+`predicates`, `which`, `get`, `history`, `entity`, `why`, `retract`, `alias`.
 
 ```json
 {

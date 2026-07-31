@@ -35,9 +35,54 @@ pub fn key(s: &str) -> String {
     out
 }
 
+/// Folds text the way *search* compares it, rather than the way identity does.
+///
+/// NFD, drop the combining marks, lowercase. The result is what
+/// [`crate::brain::Brain::find`] compares against, and it is chosen to agree with
+/// the FTS5 index rather than to be independently reasonable: `fact_fts` is
+/// tokenized `unicode61 remove_diacritics 2`, so a term query already ignores
+/// accents and case. A fragment scan that did not would make one command answer
+/// the same question two ways depending on which stage found the row.
+///
+/// The mirror image of [`key`], and the pair is the whole rule this project
+/// repeats: identity is exact, search is forgiving. `key` keeps accents so that
+/// `preço` and `preco` stay two things; this drops them so that either spelling
+/// finds either one.
+///
+/// Decomposition is what makes dropping marks correct. `é` as a single code point
+/// has no combining mark to remove, so NFC input would survive untouched and the
+/// fold would depend on which normalization form the text happened to arrive in.
+pub fn fold(s: &str) -> String {
+    s.nfd()
+        .filter(|c| !unicode_normalization::char::is_combining_mark(*c))
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::key;
+    use super::{fold, key};
+
+    #[test]
+    fn folding_ignores_case_and_accents() {
+        assert_eq!(fold("Preço"), "preco");
+        assert_eq!(fold("PREÇO"), fold("preco"));
+        assert_eq!(fold("André"), "andre");
+    }
+
+    #[test]
+    fn folding_agrees_across_composition_forms() {
+        assert_eq!(fold("pre\u{e7}o"), fold("prec\u{327}o"));
+    }
+
+    #[test]
+    fn folding_keeps_everything_else() {
+        // Unlike `key`, punctuation survives: a fragment search for `_normalize`
+        // or `k2.6` is exactly the case this exists for.
+        assert_eq!(fold("_normalize_email"), "_normalize_email");
+        assert_eq!(fold("Kimi K2.6"), "kimi k2.6");
+        assert_eq!(fold("日本語"), "日本語");
+    }
 
     #[test]
     fn separators_collapse_and_case_folds() {

@@ -5,6 +5,7 @@
 
 use crate::brain::{Cardinality, Order};
 use crate::locate::{Ctx, Selection};
+use crate::recall::Channel;
 use clap::{Args, Parser, Subcommand};
 use jiff::Timestamp;
 use std::path::PathBuf;
@@ -78,8 +79,14 @@ pub enum Cmd {
     /// Search the brain with a natural-language question.
     Recall(RecallArgs),
 
+    /// List every record whose text contains a string.
+    Find(FindArgs),
+
     /// List which subjects hold a predicate, and what the value is.
     Which(WhichArgs),
+
+    /// List the properties this brain records, and how much it holds under each.
+    Predicates,
 
     /// Show the full trajectory of a subject/predicate pair.
     History(GetArgs),
@@ -241,6 +248,45 @@ pub struct RecallArgs {
     /// replayed.
     #[arg(long)]
     pub learn: bool,
+
+    /// Which retrievers may answer, comma-separated: `bm25`, `alias`,
+    /// `semantic`, `graph`, `kin`. All of them by default.
+    ///
+    /// Narrowing this is how a surprising ranking gets explained -- `--channels
+    /// bm25` is the answer with no guessing in it at all.
+    #[arg(long, value_delimiter = ',', value_parser = parse_channel)]
+    pub channels: Option<Vec<Channel>>,
+}
+
+/// A literal-string search, filtered exactly the way `which` is.
+///
+/// No ranking flags, deliberately. This answers *which records mention this*,
+/// and a ranked answer to that is a worse answer -- the caller is gathering
+/// evidence, not asking a question.
+#[derive(Args, Debug)]
+pub struct FindArgs {
+    /// The text to look for, taken literally. A phrase stays a phrase.
+    pub needle: String,
+
+    /// Search what held at this instant instead of what holds now.
+    #[arg(long, value_name = "WHEN", conflicts_with = "history")]
+    pub as_of: Option<String>,
+
+    /// Include closed intervals, i.e. records that used to hold.
+    #[arg(long)]
+    pub history: bool,
+
+    /// High for the same reason `which`'s is: the answer always reports how many
+    /// matched, so a cut is visible rather than assumed.
+    #[arg(long, default_value_t = 200)]
+    pub limit: usize,
+
+    #[arg(long)]
+    pub scope: Option<String>,
+
+    /// Keep a namespace out of the answer.
+    #[arg(long = "not-scope", value_name = "SCOPE")]
+    pub not_scope: Option<String>,
 }
 
 /// A set question, filtered the same way the fact was written.
@@ -356,6 +402,11 @@ fn parse_cardinality(s: &str) -> Result<Cardinality, String> {
 
 fn parse_order(s: &str) -> Result<Order, String> {
     Order::parse(s).ok_or_else(|| format!("expected `subject`, `value` or `since`, got {s:?}"))
+}
+
+fn parse_channel(s: &str) -> Result<Channel, String> {
+    Channel::parse(s)
+        .ok_or_else(|| format!("expected `bm25`, `alias`, `semantic`, `graph` or `kin`, got {s:?}"))
 }
 
 /// Accepts a bare date as well as a full RFC 3339 instant, because `--at

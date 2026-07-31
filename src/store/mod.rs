@@ -43,9 +43,19 @@ pub enum StoreError {
     #[error("a brain already exists at {}", path.display())]
     AlreadyExists { path: PathBuf },
 
+    // The upgrade command is spelled out rather than implied. An agent that hits
+    // this has a working binary, a readable file and no idea that the two are
+    // years apart -- `brain --version` reports the crate version, which does not
+    // move when the schema does. Told only to "upgrade", the agent that found
+    // this reached for `sqlite3` instead, which is the failure this text exists
+    // to prevent.
     #[error(
         "the brain at {} uses schema version {found}, but this build only \
-         understands up to {supported}. Upgrade `brain`.",
+         understands up to {supported}.\n\
+         Upgrade `brain`:\n  \
+         curl -fsSL https://raw.githubusercontent.com/claudin-io/claudinio-brain/main/install.sh | sh\n\
+         Do not read the file directly instead -- a brain is a timeline, and a \
+         SELECT cannot tell what is true now.",
         path.display()
     )]
     SchemaTooNew {
@@ -199,6 +209,17 @@ impl Store {
         self.created_at
     }
 
+    /// The layout this brain is stored in, which is always [`SCHEMA_VERSION`]
+    /// once `open` has returned: an older file was migrated on the way in, and a
+    /// newer one was refused.
+    ///
+    /// Worth reporting even though it is a constant, because the interesting
+    /// comparison is against *another* binary. Two `brain` builds both calling
+    /// themselves 0.1.0 are told apart by this number and by nothing else.
+    pub fn schema_version(&self) -> i64 {
+        SCHEMA_VERSION
+    }
+
     pub fn conn(&self) -> &Connection {
         &self.conn
     }
@@ -272,7 +293,37 @@ fn open_sealed(path: &Path) -> Result<Connection> {
          PRAGMA busy_timeout = 5000;
          PRAGMA synchronous = NORMAL;",
     )?;
+    register_fold(&conn)?;
     Ok(conn)
+}
+
+/// Teaches SQL the same fold [`crate::norm::fold`] applies in Rust.
+///
+/// `find`'s fragment stage compares a needle against text SQLite is holding, and
+/// both sides have to be folded the same way for that comparison to mean
+/// anything. SQLite's own `lower()` folds ASCII case and nothing else -- no
+/// accents, no non-ASCII case -- so a scan built on it would find `preco` in
+/// `preço` never, and in `PREÇO` still never.
+///
+/// Marked deterministic, which is what lets SQLite use it inside an index or a
+/// partial-index predicate later. It genuinely is: same input, same output, no
+/// clock and no state.
+fn register_fold(conn: &Connection) -> Result<()> {
+    use rusqlite::functions::FunctionFlags;
+    conn.create_scalar_function(
+        "fold",
+        1,
+        FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
+        |ctx| {
+            // A NULL column folds to NULL rather than to the empty string, so a
+            // fact with no `object_text` does not start matching every needle.
+            match ctx.get_raw(0) {
+                rusqlite::types::ValueRef::Null => Ok(None),
+                other => Ok(Some(crate::norm::fold(other.as_str()?))),
+            }
+        },
+    )?;
+    Ok(())
 }
 
 /// `sqlite-vec` installs itself as an auto-extension, which must happen once per

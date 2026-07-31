@@ -2,7 +2,7 @@
 // mode, to the JSON-RPC transport). Diagnostics go to stderr.
 #![deny(clippy::print_stdout, clippy::dbg_macro)]
 
-use brain::brain::{Assertion, Brain, Object, WhichQuery};
+use brain::brain::{Assertion, Brain, FindQuery, Object, WhichQuery};
 use brain::cli::{
     AliasArgs, Cli, Cmd, EntityArgs, GetArgs, InitArgs, LinkArgs, RecallArgs, RememberArgs,
     parse_when,
@@ -53,7 +53,9 @@ fn run(cli: Cli) -> anyhow::Result<std::process::ExitCode> {
         Cmd::Link(args) => cmd_link(args, &cli, &ctx),
         Cmd::Get(args) => cmd_get(args, &cli, &ctx),
         Cmd::Recall(args) => cmd_recall(args, &cli, &ctx),
+        Cmd::Find(args) => cmd_find(args, &cli, &ctx),
         Cmd::Which(args) => cmd_which(args, &cli, &ctx),
+        Cmd::Predicates => cmd_predicates(&cli, &ctx),
         Cmd::History(args) => cmd_history(args, &cli, &ctx),
         Cmd::Entity(args) => cmd_entity(args, &cli, &ctx),
         Cmd::Alias(args) => cmd_alias(args, &cli, &ctx),
@@ -211,6 +213,9 @@ fn cmd_recall(args: &RecallArgs, cli: &Cli, ctx: &Ctx) -> anyhow::Result<()> {
     if let Some(s) = &args.not_scope {
         q = q.not_scope(s);
     }
+    if let Some(c) = &args.channels {
+        q = q.channels(c);
+    }
 
     let b = open(cli, ctx)?;
     let hits = b.recall(&q)?;
@@ -237,6 +242,88 @@ fn cmd_recall(args: &RecallArgs, cli: &Cli, ctx: &Ctx) -> anyhow::Result<()> {
         }
         if let Some(l) = &learned {
             emit(&format!("(learned: {:?} names {})", l.alias, l.entity));
+        }
+    }
+    Ok(())
+}
+
+/// Lists every record whose text contains a string.
+///
+/// Same output contract as `which`, because it makes the same promise: these are
+/// all of them, and the count says so when they are not.
+fn cmd_find(args: &brain::cli::FindArgs, cli: &Cli, ctx: &Ctx) -> anyhow::Result<()> {
+    let mut q = FindQuery::new(&args.needle).limit(args.limit);
+    if let Some(w) = &args.as_of {
+        q = q.when(When::AsOf(parse_when(w)?));
+    }
+    if args.history {
+        q = q.when(When::History);
+    }
+    if let Some(s) = &args.scope {
+        q = q.scope(s);
+    }
+    if let Some(s) = &args.not_scope {
+        q = q.not_scope(s);
+    }
+
+    let b = open(cli, ctx)?;
+    let found = b.find(&q)?;
+
+    if cli.json {
+        emit(&serde_json::to_string_pretty(&answer(
+            &b,
+            serde_json::json!({
+                "needle": args.needle,
+                "matched": found.matched,
+                "truncated": found.truncated,
+                "facts": found.facts,
+            }),
+        ))?);
+    } else {
+        if found.facts.is_empty() {
+            emit("(nothing mentions that)");
+        }
+        for h in &found.facts {
+            emit(&h.fact.statement);
+        }
+        if found.truncated {
+            emit(&format!(
+                "({} of {} -- raise --limit to see the rest)",
+                found.facts.len(),
+                found.matched
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Lists the properties this brain records.
+///
+/// The read that makes `which` usable. `which` starts from a predicate key, and
+/// until this existed there was no way to learn which keys a brain holds short of
+/// opening the file in a SQLite shell -- which is exactly what agents did.
+fn cmd_predicates(cli: &Cli, ctx: &Ctx) -> anyhow::Result<()> {
+    let b = open(cli, ctx)?;
+    let rows = b.predicates()?;
+
+    if cli.json {
+        emit(&serde_json::to_string_pretty(&answer(
+            &b,
+            serde_json::json!({ "predicates": rows }),
+        ))?);
+    } else if rows.is_empty() {
+        emit("(this brain records nothing yet)");
+    } else {
+        for p in &rows {
+            let kind = if p.relational { "relation" } else { "literal" };
+            emit(&format!(
+                "{:<24} {:<8} {:<9} {} facts, {} subjects",
+                p.key,
+                p.cardinality.as_str(),
+                kind,
+                p.facts,
+                p.subjects
+            ));
         }
     }
     Ok(())
@@ -692,6 +779,7 @@ fn cmd_stats(cli: &Cli, ctx: &Ctx) -> anyhow::Result<()> {
 
     let mut out = store.identity();
     out["created_at"] = serde_json::json!(store.created_at().to_string());
+    out["schema"] = serde_json::json!(store.schema_version());
     out["entities"] = serde_json::json!(report.entities);
     out["facts"] = serde_json::json!(report.facts);
     out["relations"] = serde_json::json!(report.edges);
@@ -703,6 +791,10 @@ fn cmd_stats(cli: &Cli, ctx: &Ctx) -> anyhow::Result<()> {
         emit(&format!("{} ({})", store.label(), store.path().display()));
         emit(&format!("  id:      {}", store.id()));
         emit(&format!("  created: {}", store.created_at()));
+        // Reported next to the identity because it is the only thing that tells
+        // two `brain` builds apart: the crate version does not move when the
+        // on-disk layout does, so `--version` cannot answer "is my binary old".
+        emit(&format!("  schema:  v{}", store.schema_version()));
         emit(&format!(
             "  holds:   {} entities, {} facts, {} of them relations",
             report.entities, report.facts, report.edges
