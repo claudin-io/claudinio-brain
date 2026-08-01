@@ -49,7 +49,7 @@ model2vec-rs = { version = "0.2.1", default-features = false, features = [
 tokenizers = { version = "0.21", default-features = false, features = ["onig"] }
 
 # --- MCP (behind the default-on `mcp` feature) -------------------------------
-rmcp = { version = "=2.2.0", features = [
+rmcp = { version = "=3.0.0", features = [
   "server",
   "transport-io",
   "macros",
