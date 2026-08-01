@@ -144,7 +144,7 @@ jobs:
           Compress-Archive -Path "target/${{ matrix.target }}/release/brain.exe" `
             -DestinationPath "dist/brain-${{ matrix.target }}.zip"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: brain-${{ matrix.target }}
           path: dist/*
