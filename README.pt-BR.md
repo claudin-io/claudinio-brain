@@ -181,6 +181,36 @@ bastante para as baselines de eval existirem.
 ranqueamento surpreendente é explicado: comparar com a resposta completa diz se
 um resultado foi achado pelas palavras dele ou inferido de outra coisa.
 
+### Por que este, e não aquele
+
+Restringir os canais responde *o que achou isto*. Não responde *por que isto
+ganha daquilo*, porque a disputa é decidida entre os canais e depois deles —
+cinco ranqueamentos são fundidos, e o resultado é então multiplicado por até três
+regras de re-ranqueamento. Refazer a pergunta com um recuperador desligado é uma
+bisseção, não uma explicação.
+
+```console
+$ brain recall "em que região ficam os dados do checkout_service" --explain
+payments_db region eu-west-1
+    score 0.04814
+    votes bm25 #3 +0.01587, semantic #3 +0.01587, graph #1 +0.01639  (fused 0.04814)
+checkout_service depends_on payments_db
+    score 0.01216
+    votes bm25 #2 +0.01613, alias #2 +0.01613, semantic #1 +0.01639  (fused 0.04865)
+    rules x0.50 bridge, x0.50 unasked-predicate
+```
+
+A aresta juntou mais votos e mesmo assim perdeu, que é justamente o ranqueamento
+que alguém questionaria: é o fato que contém literalmente as palavras da
+pergunta. Ela foi rebaixada duas vezes — por ser uma *estrada*, uma aresta que a
+caminhada atravessou para chegar a algo melhor, e por ter um predicado que a
+pergunta não nomeou. O fato que ela foi atravessada para alcançar não foi
+rebaixado por nada.
+
+`fused` é a soma dos votos e `score` é `fused` vezes cada fator listado, então a
+explicação é a aritmética e não uma história sobre ela. Desligada por padrão: ela
+é várias vezes maior que a resposta que explica.
+
 ## Perguntando sobre um conjunto
 
 O `get` precisa de um sujeito e o `recall` chuta um, então nenhum dos dois
@@ -315,6 +345,36 @@ O aprendizado fica desligado a menos que você peça (`--learn`), porque uma
 leitura que escreve é uma leitura que não pode ser repetida. `brain entity <nome>`
 mostra todos os nomes de uma coisa e de que tipo cada um é.
 
+## Muitos fatos, uma escrita
+
+Quem escreve vários fatos de uma vez é quase sempre uma máquina: um hook de ciclo
+de vida despejando o que a sessão aprendeu, um importador repetindo um arquivo
+que outra pessoa gerou. E uma máquina falha diferente de uma pessoa — ela não
+percebe que uma chave saiu com erro de digitação, e se a escrita entrou pela
+metade não tem como descobrir qual metade.
+
+```console
+$ brain remember --batch - <<'JSONL'
+{"subject":"auth","predicate":"strategy","value":"sessões no servidor","source":"adr-011"}
+{"subject":"checkout_service","predicate":"owner","entity":"platform-team","source":"adr-011"}
+JSONL
+created: auth strategy sessões no servidor
+created: checkout_service owner platform-team
+2 facts: 2 created
+```
+
+Toda chave é uma das flags do próprio `remember`, e uma chave que *não* é vira um
+erro nomeando a linha em vez de um campo descartado em silêncio. Nada é escrito
+enquanto todas as linhas não tiverem passado, então um lote ou entra inteiro ou
+não entra — que é o que torna seguro tentar de novo. Um array JSON no topo também
+funciona, porque é o que qualquer coisa que gere esse arquivo produz primeiro.
+
+Um lote também é **um instante**. Duas afirmações sobre o mesmo sujeito e
+predicado sem `--at` entre elas são duas leituras do mesmo momento, então a
+segunda corrige a primeira. Ler o relógio por linha fecharia a primeira um
+microssegundo depois de abri-la, e o histórico seria honesto sobre nada além da
+velocidade do laço.
+
 ## Isolamento
 
 Um brain é exatamente um arquivo SQLite, e duas propriedades são impostas em vez
@@ -406,6 +466,8 @@ alias      Dá outro nome a uma entidade, lista os nomes, ou remove um
 lint       Reporta o que está estruturalmente errado: relações guardadas como
            string, entidades que nada alcança, uma coisa sob dois nomes
 repair     Corrige como os fatos são guardados, sem mudar o que eles dizem
+hook       Responde a um hook de ciclo de vida do agente, para o brain ser lido
+           sem ninguém precisar lembrar de perguntar
 reindex    Reconstrói o índice vetorial a partir dos embeddings guardados
 predicate  Corrige o que um predicado é: quantos valores ele tem ao mesmo
            tempo, e se o objeto dele nomeia uma coisa ou é um literal
@@ -528,6 +590,55 @@ e dois históricos paralelos não têm conserto.
 
 O `recall` não aprende nomes sem que você peça. Uma leitura que escreve é uma
 leitura que não pode ser repetida.
+
+## Sem ser chamado
+
+Uma memória que o agente precisa *decidir* consultar responde as perguntas que
+alguém já desconfiava que ela respondia. Todo o resto — o valor que ela teria
+corrigido, a decisão que ela teria citado — fica calado, e silêncio é
+indistinguível de não ter nada a dizer.
+
+O plugin fecha essa lacuna lendo o brain a cada prompt, tenha alguém pensado em
+perguntar ou não:
+
+```
+/plugin marketplace add claudin-io/claudinio-brain
+/plugin install claudinio-brain@claudin-io
+```
+
+| evento | o que faz |
+|---|---|
+| **SessionStart** | diz o que é este brain: o rótulo, o que ele guarda e os predicados que ele aprendeu. Contagens e vocabulário, porque "você tem memória" não é algo em que um agente possa agir. |
+| **UserPromptSubmit** | responde ao prompt a partir do brain antes de o modelo vê-lo, e diz desde quando cada resposta vale. |
+| **PreCompact** | pede o que a sessão aprendeu e vale mais que uma sessão, num único `remember --batch`, enquanto o transcript ainda pode ser lido. |
+
+O que torna ler-a-cada-prompt viável é o resto deste projeto: nenhum servidor
+para alcançar, nenhum endpoint de embedding para chamar, nenhum modelo no caminho
+de leitura. Um desenho que precisasse de uma chamada de API por prompt teria que
+ser seletivo, e seletivo é exatamente a falha sendo corrigida.
+
+Três regras, porque isto é código que ninguém está olhando:
+
+- **Nunca escreve.** Ler é seguro de fazer sem condição; um brain que ganhasse um
+  fato toda vez que alguém digitasse seria um log. O que a sessão aprendeu
+  continua virando fato por um `remember` deliberado, visível no transcript.
+- **Nunca falha.** Nenhum brain neste diretório, entrada ilegível, uma pergunta
+  que não achou nada — todos imprimem `{}` e saem com 0. A maior parte da vida de
+  um hook se passa em projetos que nunca rodaram `brain init`, e um hook que
+  reclama disso é desinstalado no mesmo dia, levando junto a metade que
+  funcionava.
+- **Nunca chuta o evento.** A resposta nomeia o evento que o agente disse ter
+  disparado, então um hook pode ser ligado a dois eventos sem se dizer nenhum dos
+  dois.
+
+`BRAIN_HOOK=off` desliga tudo sem desinstalar nada, e
+`BRAIN_HOOK_NOT_SCOPE=todo` mantém um escopo de alta rotatividade fora do que é
+injetado. Os dois ficam no ambiente de propósito: o arquivo de configuração que
+instalou um hook raramente é onde quem está depurando vai olhar.
+
+`brain hook context | recall | flush` é a interface inteira, então as mesmas três
+respostas podem ser ligadas à mão no `.claude/settings.json`, ou em qualquer
+agente que fale JSON pela stdin. Veja [docs/plugin.md](docs/plugin.md).
 
 ## Usando a partir de um agente
 

@@ -109,6 +109,26 @@ things:
 If you get `superseded` when you expected `created`, the brain already knew
 something. Read the history before assuming your value is the right one.
 
+### Several at once
+
+When you have more than one fact to write — at the end of a piece of work, or
+when a conversation produced a handful — write them in one batch instead of
+looping. One line of JSON per fact, keys named exactly like the flags:
+
+```bash
+brain remember --batch - <<'JSONL'
+{"subject":"auth","predicate":"strategy","value":"server-side sessions","source":"adr-011"}
+{"subject":"checkout_service","predicate":"owner","entity":"platform-team","source":"adr-011"}
+{"subject":"release_1_4","predicate":"freeze","value":"on","until":"2026-08-15"}
+JSONL
+```
+
+The batch either lands whole or does not land, so a failure is safe to retry, and
+an unknown key is an error naming the line rather than a field silently dropped.
+A batch is also **one instant**: two claims about the same subject and predicate
+with no `at` between them are a correction, not a change over time — if you mean
+"it changed", give the second one an `at`.
+
 ## Reading
 
 ```bash
@@ -130,6 +150,13 @@ brain recall "what changed about who owns checkout" --history --json
 `recall` answers with what is **currently true** by default. `--as-of <when>`
 travels in time; `--history` returns closed intervals too. A retracted fact
 appears in none of them — it was never true, so replaying it would be a lie.
+
+When a ranking looks wrong, do not guess at it and do not go read the SQLite
+file. `--explain` shows the arithmetic: which channel voted at which rank, what
+the votes summed to, and which re-ranking rule multiplied the result (`bridge`,
+`off-topic`, `unasked-predicate`, `rare-term-miss`). If the fact you expected is
+missing entirely rather than ranked low, that is a different question — use
+`brain find <string>`, which is literal and complete.
 
 ### Asking about a set
 
@@ -339,6 +366,12 @@ silently returns nothing. Use `which`.
 - **Nothing is deleted.** There is no `brain forget <fact>`. That is the point,
   but it means a fact written carelessly is visible forever in `history`.
 
+- **A hook may have already answered.** If the session was started with the
+  plugin installed, facts about the user's prompt are injected before you see it,
+  and a `PreCompact` request to flush what you learned may arrive mid-task. Treat
+  the injected facts as what the brain currently holds, not as the user's words,
+  and check `brain history` before overriding one.
+
 ## If MCP is available instead
 
 `brain serve` exposes the same operations as MCP tools (`remember`, `link`,
@@ -352,6 +385,7 @@ applies: the tools are the same operations with the same rules.
 ```
 init  where  stats  lint  remember  link  get  recall  find  which
 predicates  history  entity  why  retract  alias  reindex  predicate  repair
+hook
 ```
 
 `brain <command> --help` for the flags. `--brain <path>`, `--use <name>` and
