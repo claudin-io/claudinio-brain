@@ -352,6 +352,10 @@ struct Write<'a> {
     object: &'a ResolvedObject,
     /// When the claim becomes true in the world.
     valid_from: Timestamp,
+    /// When it stops being true, if the claim says so itself. Carried here
+    /// rather than read off the assertion because it has been rounded to what
+    /// the store keeps -- see [`stored`].
+    valid_to: Option<Timestamp>,
     /// When the brain is learning it.
     now: Timestamp,
 }
@@ -466,11 +470,19 @@ impl Brain {
         let subject_key = require_key("subject", &a.subject)?;
         let predicate_key = require_key("predicate", &a.predicate)?;
 
-        let valid_from = a.valid_from.unwrap_or(now);
+        // Rounded before anything is compared, and before anything is written.
+        // See [`stored`]: the clock reads finer than the store keeps, and an
+        // instant that survives the round trip differently from the one held in
+        // memory makes "the same moment" a question with two answers.
+        let now = stored(now);
+        let valid_from = stored(a.valid_from.unwrap_or(now));
+        let valid_to = a.valid_to.map(stored);
 
         // Rejected here rather than left to the schema's CHECK, so the caller is
         // told what is wrong with the claim instead of which constraint tripped.
-        if let Some(until) = a.valid_to
+        // An interval shorter than a microsecond lands here too, now that both
+        // ends have been rounded: it is empty in the only timeline that exists.
+        if let Some(until) = valid_to
             && until <= valid_from
         {
             return Err(BrainError::EmptyInterval {
@@ -495,6 +507,7 @@ impl Brain {
             predicate_key: &predicate_key,
             object: &object,
             valid_from,
+            valid_to,
             now,
         };
 
@@ -502,7 +515,7 @@ impl Brain {
             Cardinality::Multi => {
                 // Nothing supersedes anything here, so the only end this fact can
                 // have is the one it was given.
-                let id = self.insert_fact(tx, &w, a.valid_to, false)?;
+                let id = self.insert_fact(tx, &w, valid_to, false)?;
                 Outcome::Created(load_fact(tx, id)?)
             }
             Cardinality::Single => self.place_single(tx, &w)?,
@@ -541,7 +554,7 @@ impl Brain {
             // rewritten. It never pulls the end in, and it never moves the start:
             // shortening on reassert would let a heartbeat quietly kill the thing
             // it was keeping alive.
-            if let Some(until) = w.a.valid_to {
+            if let Some(until) = w.valid_to {
                 // Capped at whatever starts next, for the same reason a new fact
                 // is: an extension running past the following claim would make two
                 // facts true at once, which is the one thing this timeline exists
@@ -605,7 +618,7 @@ impl Brain {
         // The earlier of what the claim says about itself and where the next claim
         // begins. `--until` narrows and never widens: a fact cannot outlive the one
         // that follows it just because its author thought it would.
-        let end = match (w.a.valid_to, successor.as_ref().map(|s| s.valid_from)) {
+        let end = match (w.valid_to, successor.as_ref().map(|s| s.valid_from)) {
             (Some(until), Some(next)) => Some(until.min(next)),
             (until, None) => until,
             (None, next) => next,
@@ -1198,6 +1211,35 @@ fn micros(t: Timestamp) -> i64 {
 
 fn from_micros(v: i64) -> Timestamp {
     Timestamp::from_microsecond(v).unwrap_or(Timestamp::UNIX_EPOCH)
+}
+
+/// An instant as the store will keep it.
+///
+/// `fact.valid_from` is an integer count of microseconds and `Timestamp::now()`
+/// is not: on Linux it carries nanoseconds, on macOS it does not. So an instant
+/// held in memory and the same instant read back from the store were not equal,
+/// and every comparison the write path makes between the two -- *is this the
+/// same moment as the fact already there* -- answered differently depending on
+/// the platform.
+///
+/// What that cost: two claims about one subject and predicate at one instant are
+/// a correction, and the correction was only recognised where the clock happened
+/// to be coarse. Elsewhere the second claim was treated as a *change*, which
+/// closed the first one at its own start instant and produced an empty interval
+/// -- caught by the schema's `valid_from < valid_to`, so the write failed with a
+/// constraint violation rather than doing the wrong thing quietly. It surfaced
+/// through `remember --batch`, where every claim shares one instant by design and
+/// the collision is therefore certain rather than a coincidence of timing, but
+/// the bug was never about batches: two ordinary `remember` calls inside the same
+/// microsecond hit it too.
+///
+/// Rounding at the boundary rather than comparing loosely, because a tolerance
+/// would have to be agreed on by every comparison separately and one of them
+/// would eventually disagree. There is one timeline here, its resolution is a
+/// microsecond, and an instant that cannot be stored is not an instant this brain
+/// has an opinion about.
+fn stored(t: Timestamp) -> Timestamp {
+    from_micros(micros(t))
 }
 
 /// The needle as an FTS5 phrase-prefix expression, or `None` when FTS5 would see
