@@ -419,6 +419,45 @@ impl Brain {
     /// Records a claim, deciding for itself whether that supersedes, corrects or
     /// merely reinforces what is already known.
     pub fn remember(&self, a: &Assertion) -> Result<Outcome> {
+        // One transaction for the whole decision: a rejected or failed write must
+        // leave no trace, including no half-closed predecessor.
+        let tx = self.conn().unchecked_transaction()?;
+        let outcome = self.write(&tx, a, self.clock.now())?;
+        tx.commit()?;
+        Ok(outcome)
+    }
+
+    /// Records many claims as one write.
+    ///
+    /// Two properties, and both are the reason this exists rather than a loop
+    /// around [`Brain::remember`] in the caller.
+    ///
+    /// **One transaction.** A batch that fails writes nothing at all. The caller
+    /// of a batch is nearly always a machine -- a hook flushing what a session
+    /// learned, an importer replaying a file -- and a machine that half-wrote
+    /// cannot tell which half. Retrying an all-or-nothing batch is safe; retrying
+    /// a partial one is a guess.
+    ///
+    /// **One instant.** Every claim in the batch is recorded at the same `now`,
+    /// so two claims about the same subject and predicate with no `--at` between
+    /// them land on the same instant and the later one *corrects* the earlier.
+    /// Reading the clock per claim would instead close the first a microsecond
+    /// after opening it, and the history would be honest about nothing except how
+    /// fast the loop ran.
+    pub fn remember_all(&self, assertions: &[Assertion]) -> Result<Vec<Outcome>> {
+        let tx = self.conn().unchecked_transaction()?;
+        let now = self.clock.now();
+        let mut outcomes = Vec::with_capacity(assertions.len());
+        for a in assertions {
+            outcomes.push(self.write(&tx, a, now)?);
+        }
+        tx.commit()?;
+        Ok(outcomes)
+    }
+
+    /// One claim, inside a transaction somebody else owns and against an instant
+    /// somebody else read.
+    fn write(&self, tx: &Connection, a: &Assertion, now: Timestamp) -> Result<Outcome> {
         if let Some(c) = a.confidence
             && !(0.0..=1.0).contains(&c)
         {
@@ -427,10 +466,6 @@ impl Brain {
         let subject_key = require_key("subject", &a.subject)?;
         let predicate_key = require_key("predicate", &a.predicate)?;
 
-        // One transaction for the whole decision: a rejected or failed write must
-        // leave no trace, including no half-closed predecessor.
-        let tx = self.conn().unchecked_transaction()?;
-        let now = self.clock.now();
         let valid_from = a.valid_from.unwrap_or(now);
 
         // Rejected here rather than left to the schema's CHECK, so the caller is
@@ -444,14 +479,14 @@ impl Brain {
             });
         }
 
-        let entity_id = upsert_entity(&tx, &subject_key, &a.subject, now)?;
+        let entity_id = upsert_entity(tx, &subject_key, &a.subject, now)?;
         let shape = upsert_predicate(
-            &tx,
+            tx,
             &predicate_key,
             a.cardinality,
             matches!(&a.object, Object::Entity(_)),
         )?;
-        let object = resolve_object(&tx, &a.object, shape.relational, now)?;
+        let object = resolve_object(tx, &a.object, shape.relational, now)?;
         let cardinality = shape.cardinality;
 
         let w = Write {
@@ -467,13 +502,12 @@ impl Brain {
             Cardinality::Multi => {
                 // Nothing supersedes anything here, so the only end this fact can
                 // have is the one it was given.
-                let id = self.insert_fact(&tx, &w, a.valid_to, false)?;
-                Outcome::Created(load_fact(&tx, id)?)
+                let id = self.insert_fact(tx, &w, a.valid_to, false)?;
+                Outcome::Created(load_fact(tx, id)?)
             }
-            Cardinality::Single => self.place_single(&tx, &w)?,
+            Cardinality::Single => self.place_single(tx, &w)?,
         };
 
-        tx.commit()?;
         Ok(outcome)
     }
 

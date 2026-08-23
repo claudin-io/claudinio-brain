@@ -212,6 +212,15 @@ pub struct RecallParams {
     /// was found by words or inferred.
     #[serde(default)]
     pub channels: Option<Vec<String>>,
+    /// Attach the arithmetic to every hit: which channel voted at which rank,
+    /// what the votes summed to, and which re-ranking rule multiplied the
+    /// result.
+    ///
+    /// Ask for it when a ranking surprises you and you are about to guess why.
+    /// Narrowing `channels` says *what found this*; this says *why it outranks
+    /// the one below it*, which is settled between the channels and after them.
+    #[serde(default)]
+    pub explain: bool,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -578,6 +587,9 @@ impl BrainServer {
                 })
                 .collect::<Result<Vec<_>, _>>()?;
             q = q.channels(&channels);
+        }
+        if p.explain {
+            q = q.explaining();
         }
 
         let (hits, learned) = self.with(|b| {

@@ -110,6 +110,16 @@ pub enum Cmd {
     /// Rebuild the vector index from the stored embeddings.
     Reindex,
 
+    /// Answer a harness lifecycle hook, so the brain is read without anyone
+    /// having to remember to ask it.
+    ///
+    /// Reads the harness's JSON on stdin and writes the harness's JSON on
+    /// stdout. It never writes to the brain, never fails, and prints `{}` when
+    /// there is nothing to say -- including in every directory that has no
+    /// brain. `BRAIN_HOOK=off` in the environment turns it off without
+    /// uninstalling anything.
+    Hook(HookArgs),
+
     /// Speak MCP over stdio, so an agent can use this brain as a tool.
     #[cfg(feature = "mcp")]
     Serve,
@@ -132,10 +142,31 @@ pub enum Cmd {
 
 #[derive(Args, Debug)]
 pub struct RememberArgs {
-    #[arg(long)]
-    pub subject: String,
-    #[arg(long)]
-    pub predicate: String,
+    /// Read many facts from a file of JSON objects, one per line, or from `-`
+    /// for stdin. A top-level JSON array is accepted too, because that is what
+    /// anything generating the file will produce first.
+    ///
+    /// Every key is one of the flags below: `subject`, `predicate`, `value` or
+    /// `entity`, `unit`, `at`, `until`, `source`, `locator`, `confidence`,
+    /// `scope`, `cardinality`. An unknown key is an error naming the line, not a
+    /// field quietly dropped -- a batch is written by a machine, and a machine
+    /// does not notice that its typo went nowhere.
+    ///
+    /// The whole batch is one write: if any line is bad, nothing is recorded.
+    #[arg(
+        long,
+        value_name = "PATH",
+        conflicts_with_all = [
+            "subject", "predicate", "value", "entity", "unit", "at", "until",
+            "source", "locator", "confidence", "scope", "cardinality",
+        ],
+    )]
+    pub batch: Option<PathBuf>,
+
+    #[arg(long, required_unless_present = "batch")]
+    pub subject: Option<String>,
+    #[arg(long, required_unless_present = "batch")]
+    pub predicate: Option<String>,
 
     /// A literal value. Parsed as a number when it looks like one, else as text.
     #[arg(long, conflicts_with = "entity")]
@@ -174,6 +205,15 @@ pub struct RememberArgs {
 
     #[arg(long, value_parser = parse_cardinality)]
     pub cardinality: Option<Cardinality>,
+}
+
+#[derive(Args, Debug)]
+pub struct HookArgs {
+    /// `context` introduces the brain (attach to SessionStart), `recall`
+    /// answers the prompt just typed (UserPromptSubmit), `flush` asks for what
+    /// the session learned before it is lost (PreCompact, SessionEnd).
+    #[arg(value_enum)]
+    pub what: crate::hook::What,
 }
 
 #[derive(Args, Debug)]
@@ -256,6 +296,16 @@ pub struct RecallArgs {
     /// bm25` is the answer with no guessing in it at all.
     #[arg(long, value_delimiter = ',', value_parser = parse_channel)]
     pub channels: Option<Vec<Channel>>,
+
+    /// Show the arithmetic: which channel voted at which rank, what the votes
+    /// summed to, and which re-ranking rule multiplied the result.
+    ///
+    /// `--channels` answers *what found this*. It cannot answer *why this
+    /// outranks that*, because the contest is settled between the channels and
+    /// after them -- and re-running the question with a channel switched off is
+    /// a bisection, not an explanation.
+    #[arg(long)]
+    pub explain: bool,
 }
 
 /// A literal-string search, filtered exactly the way `which` is.

@@ -1,0 +1,15 @@
+{
+  "name": "claudin-io",
+  "owner": {
+    "name": "claudin-io",
+    "url": "https://github.com/claudin-io"
+  },
+  "plugins": [
+    {
+      "name": "claudinio-brain",
+      "source": "./",
+      "description": "Bitemporal knowledge-graph memory. One binary, one SQLite file, no server, no network.",
+      "keywords": ["memory", "knowledge-graph", "bitemporal", "offline"]
+    }
+  ]
+}

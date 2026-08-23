@@ -99,6 +99,8 @@ pub struct RecallQuery {
     /// A namespace to keep *out* of the answer.
     pub not_scope: Option<String>,
     pub channels: Vec<Channel>,
+    /// Whether each hit carries the arithmetic that put it there.
+    pub explain: bool,
 }
 
 impl RecallQuery {
@@ -110,6 +112,7 @@ impl RecallQuery {
             scope: None,
             not_scope: None,
             channels: Channel::ALL.to_vec(),
+            explain: false,
         }
     }
 
@@ -142,6 +145,14 @@ impl RecallQuery {
         self.channels = c.to_vec();
         self
     }
+
+    /// Asks every hit to carry its own arithmetic. Off by default: an
+    /// explanation is several times the size of the answer it explains, and the
+    /// caller that wants one knows it does.
+    pub fn explaining(mut self) -> Self {
+        self.explain = true;
+        self
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -150,6 +161,80 @@ pub struct Hit {
     pub score: f64,
     /// Every channel that surfaced this fact, sorted for stable output.
     pub channels: Vec<Channel>,
+    /// The arithmetic behind [`Hit::score`], when it was asked for. Absent
+    /// otherwise, and absent rather than empty: a caller that did not ask must
+    /// not have to tell "no explanation" from "explained, and nothing happened".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub explain: Option<Explain>,
+}
+
+/// One channel's contribution to a fused score.
+#[derive(Debug, Clone, Serialize)]
+pub struct Vote {
+    pub channel: Channel,
+    /// Where this channel ranked the fact, counting from 1 -- the number that
+    /// went into the RRF denominator, not an index.
+    pub rank: usize,
+    /// `1 / (RRF_K + rank)`, i.e. what this vote was worth.
+    pub points: f64,
+}
+
+/// A re-ranking rule that fired on a fact, and what it cost.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Rule {
+    /// See [`BRIDGE_DEMOTION`]: an edge the walk crossed on the way somewhere.
+    Bridge,
+    /// See [`OFF_TOPIC_DEMOTION`]: an entity the question neither named nor
+    /// reached.
+    OffTopic,
+    /// See [`UNASKED_PREDICATE_DEMOTION`]: the question named a predicate, and
+    /// this is not it.
+    UnaskedPredicate,
+    /// See [`RARE_TERM_MISS_DEMOTION`]: the question named a term the brain
+    /// barely uses, and this fact does not contain it.
+    RareTermMiss,
+}
+
+impl Rule {
+    /// The name in both outputs. One list, so the JSON and the printed line can
+    /// never call the same rule two things.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Bridge => "bridge",
+            Self::OffTopic => "off-topic",
+            Self::UnaskedPredicate => "unasked-predicate",
+            Self::RareTermMiss => "rare-term-miss",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct Demotion {
+    pub rule: Rule,
+    pub factor: f64,
+}
+
+/// Why a fact is in the answer, and why it is where it is.
+///
+/// `recall` fuses five channels and then multiplies the result by up to three
+/// re-ranking rules, and every one of those steps is a judgement about intent.
+/// `--channels` could already isolate a retriever, which answers *which channel
+/// found this*; it cannot answer *why this fact outranks that one*, because the
+/// contest happens between channels and after them. Reading the same ranking
+/// twice with different flags is not an explanation, it is a bisection.
+///
+/// The invariant worth checking, and the reason the parts are reported
+/// separately: `fused` is the sum of `votes`, and `score` is `fused` times every
+/// factor in `demotions`. Nothing else touches a score.
+#[derive(Debug, Clone, Serialize)]
+pub struct Explain {
+    /// Every channel that voted, in channel order.
+    pub votes: Vec<Vote>,
+    /// What the votes summed to, before any rule applied.
+    pub fused: f64,
+    /// The rules that fired, in the order they were applied.
+    pub demotions: Vec<Demotion>,
 }
 
 /// Reciprocal rank fusion constant. 60 is the value from the original TREC work
@@ -416,6 +501,7 @@ impl Brain {
         // Rank per channel, then fuse. `fused` maps fact id -> (rrf score,
         // channels), in a BTreeMap so iteration order never varies by run.
         let mut fused: BTreeMap<i64, (f64, Vec<Channel>)> = BTreeMap::new();
+        let mut trace = Trace::new(q.explain);
         for channel in Channel::CONTENT.iter().filter(|c| q.channels.contains(c)) {
             let ids = match channel {
                 Channel::Bm25 => bm25_channel(conn, &q.text, &filter)?,
@@ -425,7 +511,7 @@ impl Brain {
                     unreachable!("expansion channels expand, they do not retrieve")
                 }
             };
-            fuse(&mut fused, ids, *channel);
+            fuse(&mut fused, ids, *channel, &mut trace);
         }
 
         // The two expansion channels run last because they widen what the others
@@ -437,8 +523,8 @@ impl Brain {
         if q.channels.contains(&Channel::Graph) {
             let walk = self.walk(conn, q, &filter, &anchors.ids)?;
             focus.entities.extend(&walk.reached);
-            fuse(&mut fused, walk.ranked.clone(), Channel::Graph);
-            demote_bridges(&mut fused, &walk);
+            fuse(&mut fused, walk.ranked.clone(), Channel::Graph, &mut trace);
+            demote_bridges(&mut fused, &walk, &mut trace);
         }
 
         // Kinship after the walk, so an entity an edge already reached keeps the
@@ -448,10 +534,10 @@ impl Brain {
             let kin = crate::kin::related(conn, &anchors.ids, &filter)?;
             focus.entities.extend(kin.iter().map(|k| k.entity_id));
             let ids = kin_channel(conn, &kin, &filter, &normalized_terms(&q.text))?;
-            fuse(&mut fused, ids, Channel::Kin);
+            fuse(&mut fused, ids, Channel::Kin, &mut trace);
         }
 
-        self.refocus(conn, &mut fused, &focus, &q.text)?;
+        self.refocus(conn, &mut fused, &focus, &q.text, &mut trace)?;
 
         let mut order: Vec<(i64, f64, Vec<Channel>)> = fused
             .into_iter()
@@ -474,6 +560,7 @@ impl Brain {
                 fact: self.fact(id)?,
                 score,
                 channels,
+                explain: trace.explain(id),
             });
         }
         Ok(hits)
@@ -481,11 +568,77 @@ impl Brain {
 }
 
 /// Adds one channel's ranking to the fusion.
-fn fuse(fused: &mut BTreeMap<i64, (f64, Vec<Channel>)>, ids: Vec<i64>, channel: Channel) {
+fn fuse(
+    fused: &mut BTreeMap<i64, (f64, Vec<Channel>)>,
+    ids: Vec<i64>,
+    channel: Channel,
+    trace: &mut Trace,
+) {
     for (rank, id) in ids.into_iter().enumerate() {
+        let rank = rank + 1;
+        let points = 1.0 / (RRF_K + rank as f64);
         let e = fused.entry(id).or_insert((0.0, Vec::new()));
-        e.0 += 1.0 / (RRF_K + (rank + 1) as f64);
+        e.0 += points;
         e.1.push(channel);
+        trace.vote(id, channel, rank, points);
+    }
+}
+
+/// The arithmetic, written down as it happens.
+///
+/// Every method returns immediately when nobody asked, so an ordinary `recall`
+/// pays one branch per vote and allocates nothing. The alternative -- deriving
+/// the explanation afterwards from the answer -- would have to re-run the
+/// channels to learn what they ranked, and a second run of a rule is a second
+/// opinion, not a record of the first.
+#[derive(Default)]
+struct Trace {
+    on: bool,
+    votes: BTreeMap<i64, Vec<Vote>>,
+    demotions: BTreeMap<i64, Vec<Demotion>>,
+}
+
+impl Trace {
+    fn new(on: bool) -> Self {
+        Self {
+            on,
+            ..Default::default()
+        }
+    }
+
+    fn vote(&mut self, id: i64, channel: Channel, rank: usize, points: f64) {
+        if !self.on {
+            return;
+        }
+        self.votes.entry(id).or_default().push(Vote {
+            channel,
+            rank,
+            points,
+        });
+    }
+
+    fn demote(&mut self, id: i64, rule: Rule, factor: f64) {
+        if !self.on {
+            return;
+        }
+        self.demotions
+            .entry(id)
+            .or_default()
+            .push(Demotion { rule, factor });
+    }
+
+    /// Consumes what was recorded about one fact. Called once per reported hit,
+    /// so the map shrinks to what nobody asked about and is dropped with it.
+    fn explain(&mut self, id: i64) -> Option<Explain> {
+        if !self.on {
+            return None;
+        }
+        let votes = self.votes.remove(&id).unwrap_or_default();
+        Some(Explain {
+            fused: votes.iter().map(|v| v.points).sum(),
+            votes,
+            demotions: self.demotions.remove(&id).unwrap_or_default(),
+        })
     }
 }
 
@@ -551,7 +704,7 @@ struct Walk {
 /// demoted, and the route may be longer than one edge: reaching a contact through
 /// a supplier makes *both* hops roads, even though the middle entity contributed
 /// no answer of its own.
-fn demote_bridges(fused: &mut BTreeMap<i64, (f64, Vec<Channel>)>, walk: &Walk) {
+fn demote_bridges(fused: &mut BTreeMap<i64, (f64, Vec<Channel>)>, walk: &Walk, trace: &mut Trace) {
     for edge_id in &walk.roads {
         let asked_for = walk
             .bridge_predicates
@@ -562,6 +715,7 @@ fn demote_bridges(fused: &mut BTreeMap<i64, (f64, Vec<Channel>)>, walk: &Walk) {
         }
         if let Some(entry) = fused.get_mut(edge_id) {
             entry.0 *= BRIDGE_DEMOTION;
+            trace.demote(*edge_id, Rule::Bridge, BRIDGE_DEMOTION);
         }
     }
 }
@@ -620,6 +774,7 @@ impl Brain {
         fused: &mut BTreeMap<i64, (f64, Vec<Channel>)>,
         focus: &Focus,
         text: &str,
+        trace: &mut Trace,
     ) -> std::result::Result<(), BrainError> {
         let asked = named_predicates(conn, &normalized_terms(text))?;
         // Only looked up when it could apply, so a question with an address pays
@@ -642,12 +797,15 @@ impl Brain {
                 || shape.object.is_some_and(|o| focus.entities.contains(&o));
             if focus.from_question && !near {
                 *score *= OFF_TOPIC_DEMOTION;
+                trace.demote(*id, Rule::OffTopic, OFF_TOPIC_DEMOTION);
             }
             if !asked.is_empty() && !asked.contains(&shape.predicate) {
                 *score *= UNASKED_PREDICATE_DEMOTION;
+                trace.demote(*id, Rule::UnaskedPredicate, UNASKED_PREDICATE_DEMOTION);
             }
             if rare.as_ref().is_some_and(|hits| !hits.contains(id)) {
                 *score *= RARE_TERM_MISS_DEMOTION;
+                trace.demote(*id, Rule::RareTermMiss, RARE_TERM_MISS_DEMOTION);
             }
         }
         Ok(())
