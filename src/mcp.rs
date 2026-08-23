@@ -26,8 +26,8 @@
 //! and no lock is ever held across an await. Making these `async` would buy
 //! nothing and add a way to deadlock.
 
-use crate::brain::{Assertion, Brain, BrainError, Object, Order, WhichQuery};
-use crate::recall::{RecallQuery, When};
+use crate::brain::{Assertion, Brain, BrainError, FindQuery, Object, Order, WhichQuery};
+use crate::recall::{Channel, RecallQuery, When};
 use rmcp::handler::server::wrapper::{Json, Parameters};
 use rmcp::model::{ErrorData, ServerCapabilities, ServerInfo};
 use rmcp::{ServerHandler, ServiceExt, schemars, tool, tool_router};
@@ -204,6 +204,50 @@ pub struct RecallParams {
     /// of one -- otherwise the brain learns your wording rather than theirs.
     #[serde(default)]
     pub learn: bool,
+    /// Which retrievers may answer: any of `bm25`, `alias`, `semantic`, `graph`,
+    /// `kin`. All of them by default, which is nearly always what you want.
+    ///
+    /// Narrow it to explain a ranking you did not expect: `["bm25"]` is the
+    /// answer with no guessing in it, and comparing the two says whether a hit
+    /// was found by words or inferred.
+    #[serde(default)]
+    pub channels: Option<Vec<String>>,
+    /// Attach the arithmetic to every hit: which channel voted at which rank,
+    /// what the votes summed to, and which re-ranking rule multiplied the
+    /// result.
+    ///
+    /// Ask for it when a ranking surprises you and you are about to guess why.
+    /// Narrowing `channels` says *what found this*; this says *why it outranks
+    /// the one below it*, which is settled between the channels and after them.
+    #[serde(default)]
+    pub explain: bool,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct FindParams {
+    /// The text to look for, taken literally. A phrase stays a phrase: "context
+    /// reset" finds that phrase, not every record mentioning either word.
+    ///
+    /// Matched two ways at once -- as a whole word or word prefix through the
+    /// index (accent-insensitive and stemmed, so `preco` finds `preço` and
+    /// `normalize` finds `normalized`), and as a raw substring, which is the only
+    /// way to find a fragment from the middle of an identifier.
+    pub needle: String,
+    /// Search what held at this instant instead of what holds now.
+    #[serde(default)]
+    pub as_of: Option<String>,
+    /// Include closed intervals, i.e. records that used to hold.
+    #[serde(default)]
+    pub history: bool,
+    /// Defaults to 200. Compare `matched` against the number returned to find out
+    /// whether this cut anything off.
+    #[serde(default)]
+    pub limit: Option<usize>,
+    #[serde(default)]
+    pub scope: Option<String>,
+    /// A namespace to keep out of the answer.
+    #[serde(default)]
+    pub not_scope: Option<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -346,6 +390,25 @@ pub struct WhichResult {
     pub matched: i64,
     /// True when `limit` cut the answer short, so what you have is a prefix.
     pub truncated: bool,
+}
+
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct FindResult {
+    /// The matching records, grouped by subject. Each carries `via`, saying
+    /// whether the index or the substring scan found it.
+    pub facts: serde_json::Value,
+    /// How many matched in total, before `limit`. If it equals the number
+    /// returned, you are holding every record that mentions the needle.
+    pub matched: i64,
+    /// True when `limit` cut the answer short.
+    pub truncated: bool,
+}
+
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct PredicatesResult {
+    /// Every property this brain records, most-used first, with its cardinality,
+    /// whether its object names an entity, and how much it holds.
+    pub predicates: serde_json::Value,
 }
 
 #[derive(serde::Serialize, schemars::JsonSchema)]
@@ -509,6 +572,25 @@ impl BrainServer {
         if let Some(s) = &p.not_scope {
             q = q.not_scope(s);
         }
+        if let Some(names) = &p.channels {
+            let channels = names
+                .iter()
+                .map(|n| {
+                    Channel::parse(n).ok_or_else(|| {
+                        ErrorData::invalid_params(
+                            format!(
+                                "expected `bm25`, `alias`, `semantic`, `graph` or `kin`, got {n:?}"
+                            ),
+                            None,
+                        )
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            q = q.channels(&channels);
+        }
+        if p.explain {
+            q = q.explaining();
+        }
 
         let (hits, learned) = self.with(|b| {
             let hits = b.recall(&q)?;
@@ -525,6 +607,59 @@ impl BrainServer {
         Ok(Json(RecallResult {
             hits: json!(hits),
             learned: json!(learned),
+        }))
+    }
+
+    /// List every record whose text contains a string. This is the tool for
+    /// **"which records mention this"** -- an identifier, a file path, a person's
+    /// name, a phrase somebody used.
+    ///
+    /// Use it instead of `recall` when you are gathering evidence rather than
+    /// asking a question. `recall` ranks by relevance, returns the best few, and
+    /// cannot tell you what it left out; this returns everything that matches and
+    /// reports `matched`, so you can act on the set as a set. Use it instead of
+    /// `which` when you do not know which predicate the text would be under.
+    ///
+    /// It searches the text of records, not the names of things: to see what a
+    /// brain calls something, use `entity`. **If you are ever tempted to open the
+    /// brain's SQLite file to grep for a term, this is the tool you wanted** -- and
+    /// if it cannot answer, say so rather than reading the file, because a SELECT
+    /// cannot tell what is true now.
+    #[tool(name = "find")]
+    fn find(&self, Parameters(p): Parameters<FindParams>) -> Result<Json<FindResult>, ErrorData> {
+        let mut q = FindQuery::new(&p.needle).limit(p.limit.unwrap_or(200));
+        if let Some(t) = parse_at(p.as_of.as_ref())? {
+            q = q.when(When::AsOf(t));
+        }
+        if p.history {
+            q = q.when(When::History);
+        }
+        if let Some(s) = &p.scope {
+            q = q.scope(s);
+        }
+        if let Some(s) = &p.not_scope {
+            q = q.not_scope(s);
+        }
+
+        let found = self.with(|b| b.find(&q))?;
+        Ok(Json(FindResult {
+            facts: json!(found.facts),
+            matched: found.matched,
+            truncated: found.truncated,
+        }))
+    }
+
+    /// List the properties this brain records, most-used first.
+    ///
+    /// Call it before `which`, which needs a predicate key, and before inventing
+    /// one on a write: a brain that already records `owner` should not acquire a
+    /// parallel `responsavel` because nobody looked. It is also the fastest way to
+    /// see what an unfamiliar brain is actually about.
+    #[tool(name = "predicates")]
+    fn predicates(&self) -> Result<Json<PredicatesResult>, ErrorData> {
+        let rows = self.with(|b| b.predicates())?;
+        Ok(Json(PredicatesResult {
+            predicates: json!(rows),
         }))
     }
 
@@ -728,6 +863,16 @@ impl ServerHandler for BrainServer {
                  writing about something that may already exist, call `entity` to \
                  check which spelling it is stored under. If a value changed, call \
                  `remember`; only call `retract` when a claim was never true.\n\n\
+                 Four reads, and picking the wrong one is the usual reason a brain \
+                 looks empty when it is not. `recall` answers a question and \
+                 returns the best few. `find` lists every record whose text \
+                 contains a string, and says how many there were -- that is the one \
+                 for gathering evidence about a term, an identifier or a file path. \
+                 `which` lists every subject holding a predicate; `predicates` says \
+                 which predicates exist, so `which` is usable without guessing. \
+                 Never read the brain's SQLite file directly: it is a timeline, a \
+                 SELECT cannot tell what is true now, and if these tools cannot \
+                 answer something then say so instead.\n\n\
                  When a value names something you could ask another question about \
                  -- a class, an owner, a supplier, a category -- pass it as \
                  `entity`, not `value`. That records a relation, and relations are \

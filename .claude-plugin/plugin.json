@@ -1,0 +1,14 @@
+{
+  "name": "claudinio-brain",
+  "displayName": "Claudinio Brain",
+  "description": "Bitemporal memory for a project: what it knows is read on every prompt, and what it learns outlives the session.",
+  "version": "0.1.0",
+  "author": {
+    "name": "claudin-io",
+    "url": "https://github.com/claudin-io"
+  },
+  "homepage": "https://github.com/claudin-io/claudinio-brain",
+  "repository": "https://github.com/claudin-io/claudinio-brain",
+  "license": "MIT",
+  "keywords": ["memory", "knowledge-graph", "bitemporal", "sqlite", "offline"]
+}

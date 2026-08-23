@@ -175,6 +175,40 @@ not a transformer. No ONNX runtime, no download, no C++ toolchain, and no
 sampling, which is what makes recall reproducible enough for the eval baselines
 to exist at all.
 
+`--channels bm25` narrows a question to one retriever. That is how a surprising
+ranking gets explained: comparing it against the full answer says whether a hit
+was found by its words or inferred from something else.
+
+### Why this, and not that
+
+Narrowing the channels answers *what found this*. It cannot answer *why this
+outranks that*, because the contest is settled between the channels and after
+them — five rankings are fused, and the result is then multiplied by up to three
+re-ranking rules. Asking the question again with a retriever switched off is a
+bisection, not an explanation.
+
+```console
+$ brain recall "which region does checkout_service data live in" --explain
+payments_db region eu-west-1
+    score 0.04814
+    votes bm25 #3 +0.01587, semantic #3 +0.01587, graph #1 +0.01639  (fused 0.04814)
+checkout_service depends_on payments_db
+    score 0.01216
+    votes bm25 #2 +0.01613, alias #2 +0.01613, semantic #1 +0.01639  (fused 0.04865)
+    rules x0.50 bridge, x0.50 unasked-predicate
+```
+
+The edge collected the most votes and still lost, which is the ranking anyone
+would have questioned: it is the fact that literally contains the words of the
+question. It was demoted twice — once for being a *road*, an edge the walk
+crossed on the way to something better, and once for holding a predicate the
+question did not name. The answer it was crossed to reach was demoted for
+nothing.
+
+`fused` is the sum of the votes and `score` is `fused` times every factor listed,
+so an explanation is the arithmetic rather than a story about it. Off by default:
+it is several times the size of the answer it explains.
+
 ## Asking about a set
 
 `get` needs a subject and `recall` guesses at one, so neither can answer *which
@@ -227,6 +261,47 @@ through it. Don't: traversal deliberately refuses to expand *through* a
 high-degree hub, so the graph answer works up to about fifty tasks and then
 silently returns nothing at all. That is the failure `which` exists to replace.
 
+## Searching the content
+
+`recall` answers a question and `which` answers about a set. Neither answers
+*which records mention this string* — an identifier, a file path, a phrase
+somebody used — and that is what anyone gathering evidence is actually asking.
+Left missing, it is the question that sends an agent to open the SQLite file and
+grep it by hand.
+
+```console
+$ brain find _normalize_email
+trial regra_de_migracao mudar _normalize_email exige rodar scripts/migrate_trial_locks.py
+
+$ brain find PRIDAY          # inside a token, where an index cannot look
+cupom_x codigo FEEDBACK25-PRIDAYFARELYA
+
+$ brain find "context reset" # a phrase stays a phrase, not either word
+```
+
+Two stages, unioned, and every hit reports which of them found it. The FTS5 index
+matches a whole token or a token prefix — accent- and case-insensitive and
+stemmed, so `preco` finds `preço` — and a folded substring scan finds a fragment
+from the middle of a token, which is what identifiers are made of. The needle
+stays literal throughout: `_` and `%` are characters here, not wildcards. Like
+`which` and unlike `recall`, the answer carries `matched`, so a cut is visible
+rather than assumed.
+
+`which` starts from a predicate key, and a brain's vocabulary is learned rather
+than declared — so there has to be a way to ask what it has learned:
+
+```console
+$ brain predicates
+status                   single   literal   12 facts, 12 subjects
+owner                    single   relation  4 facts, 4 subjects
+is_a                     single   relation  3 facts, 3 subjects
+```
+
+Ordered by weight, because the first question anyone has of an unfamiliar brain
+is what it is mostly made of. The `relation` / `literal` column is the one
+`brain lint` reports on: a predicate that obviously names a thing and says
+`literal` stores and reads back perfectly, and no walk of the graph can follow it.
+
 ## Names
 
 An entity is stored under one key, but people ask about it in other words.
@@ -262,6 +337,36 @@ The two are trusted very differently, and the split is load-bearing:
 Learning is off unless you ask for it (`--learn`), because a read that writes is
 a read that cannot be replayed. `brain entity <name>` shows every name a thing
 answers to and which kind each one is.
+
+## Many facts, one write
+
+The caller that writes several facts at once is nearly always a machine: a
+lifecycle hook flushing what a session learned, an importer replaying a file
+somebody else produced. A machine fails differently from a person — it does not
+notice that a key was misspelled, and if a write lands halfway it has no way to
+find out which half.
+
+```console
+$ brain remember --batch - <<'JSONL'
+{"subject":"auth","predicate":"strategy","value":"server-side sessions","source":"adr-011"}
+{"subject":"checkout_service","predicate":"owner","entity":"platform-team","source":"adr-011"}
+JSONL
+created: auth strategy server-side sessions
+created: checkout_service owner platform-team
+2 facts: 2 created
+```
+
+Every key is one of `remember`'s own flags, and a key that is *not* is an error
+naming the line rather than a field quietly dropped. Nothing is written unless
+every line parses, so a batch either lands whole or does not land — which is what
+makes retrying one safe. A top-level JSON array works too, because that is what
+anything generating the file produces first.
+
+One batch is also **one instant**. Two claims about the same subject and
+predicate with no `--at` between them are two readings of the same moment, so the
+second corrects the first. Reading the clock per line would instead close the
+first a microsecond after opening it, and the history would be honest about
+nothing except how fast the loop ran.
 
 ## Isolation
 
@@ -341,7 +446,10 @@ remember   Record a fact
 link       Record a relation between two entities
 get        Read the current value, or the value at a past instant
 recall     Search the brain with a natural-language question
+find       List every record whose text contains a string
 which      List which subjects hold a predicate, and what the value is
+predicates List the properties this brain records, and how much it holds under
+           each
 history    Show the full trajectory of a subject/predicate pair
 entity     Show what is known about an entity, and what it connects to
 why        Show where a fact came from and what became of it
@@ -350,6 +458,8 @@ alias      Give an entity another name, list the names it has, or take one away
 lint       Report what is structurally wrong: relations stored as strings,
            entities nothing can reach, one thing living under two names
 repair     Fix how facts are stored, without changing what they say
+hook       Answer a harness lifecycle hook, so the brain is read without anyone
+           having to remember to ask it
 reindex    Rebuild the vector index from the stored embeddings
 predicate  Fix what a predicate is: how many values it holds at once, and
            whether its object names a thing rather than being a literal
@@ -446,8 +556,8 @@ which is what stops DNS rebinding from making the token travel for free.
 ## MCP
 
 `brain serve` speaks MCP over stdio, so an agent can use a brain as a tool
-surface. Nine tools: `remember`, `link`, `recall`, `get`, `history`, `entity`,
-`why`, `retract`, `alias`.
+surface. Twelve tools: `remember`, `link`, `recall`, `find`, `predicates`,
+`which`, `get`, `history`, `entity`, `why`, `retract`, `alias`.
 
 ```json
 {
@@ -469,6 +579,54 @@ under, because identity is exact and two parallel histories cannot be repaired.
 
 `recall` does not learn names unless asked. A read that writes is a read that
 cannot be replayed.
+
+## Without being asked
+
+A memory an agent has to *decide* to consult answers the questions somebody
+already suspected it could answer. Everything else — the value it would have
+corrected, the decision it would have cited — it stays silent about, and silence
+is indistinguishable from having nothing to say.
+
+The plugin closes that gap by reading the brain on every prompt, whether or not
+anyone thought to ask:
+
+```
+/plugin marketplace add claudin-io/claudinio-brain
+/plugin install claudinio-brain@claudin-io
+```
+
+| event | what it does |
+|---|---|
+| **SessionStart** | says what this brain is: its label, what it holds, and the predicates it has learned. Counts and vocabulary, because "you have memory" is not something an agent can act on. |
+| **UserPromptSubmit** | answers the prompt from the brain before the model sees it, and says how old each answer is. |
+| **PreCompact** | asks for anything learned this session that is worth more than one session, in one `remember --batch`, while the transcript is still readable. |
+
+What makes reading-on-every-prompt affordable is the rest of this project: no
+server to reach, no embedding endpoint to call, no model on the read path. A
+design that had to make an API call per prompt would have to be selective about
+it, and selective is the failure being fixed.
+
+Three rules, because this is code nobody is watching:
+
+- **It never writes.** Reading is safe to do unconditionally; a brain that grew a
+  fact every time somebody typed would be a log. What the session learned still
+  goes through a deliberate `remember`, visible in the transcript.
+- **It never fails.** No brain in this directory, unreadable input, a question
+  that found nothing — all of them print `{}` and exit 0. Most of a hook's life
+  is spent in projects that never ran `brain init`, and a hook that complains
+  about that gets uninstalled the same day, taking the working half with it.
+- **It never guesses the event.** The payload names whichever event the harness
+  says fired, so one hook can be attached to two events without claiming to be
+  either.
+
+`BRAIN_HOOK=off` turns it off without uninstalling anything, and
+`BRAIN_HOOK_NOT_SCOPE=todo` keeps a high-churn namespace out of what is injected.
+Both live in the environment on purpose: the settings file that installed a hook
+is usually not where the person debugging it is looking.
+
+`brain hook context | recall | flush` is the whole interface, so the same three
+answers can be wired by hand into `.claude/settings.json`, or into any harness
+that speaks JSON on stdin. See [docs/plugin.md](docs/plugin.md).
 
 ## Using it from an agent
 

@@ -2,7 +2,8 @@
 // mode, to the JSON-RPC transport). Diagnostics go to stderr.
 #![deny(clippy::print_stdout, clippy::dbg_macro)]
 
-use brain::brain::{Assertion, Brain, Object, WhichQuery};
+use anyhow::Context as _;
+use brain::brain::{Assertion, Brain, FindQuery, Object, WhichQuery};
 use brain::cli::{
     AliasArgs, Cli, Cmd, EntityArgs, GetArgs, InitArgs, LinkArgs, RecallArgs, RememberArgs,
     parse_when,
@@ -14,6 +15,7 @@ use brain::locate::Ctx;
 use brain::recall::{RecallQuery, When};
 use brain::store::Store;
 use clap::Parser;
+use std::collections::{BTreeMap, BTreeSet};
 
 fn main() -> std::process::ExitCode {
     tracing_subscriber::fmt()
@@ -53,11 +55,14 @@ fn run(cli: Cli) -> anyhow::Result<std::process::ExitCode> {
         Cmd::Link(args) => cmd_link(args, &cli, &ctx),
         Cmd::Get(args) => cmd_get(args, &cli, &ctx),
         Cmd::Recall(args) => cmd_recall(args, &cli, &ctx),
+        Cmd::Find(args) => cmd_find(args, &cli, &ctx),
         Cmd::Which(args) => cmd_which(args, &cli, &ctx),
+        Cmd::Predicates => cmd_predicates(&cli, &ctx),
         Cmd::History(args) => cmd_history(args, &cli, &ctx),
         Cmd::Entity(args) => cmd_entity(args, &cli, &ctx),
         Cmd::Alias(args) => cmd_alias(args, &cli, &ctx),
         Cmd::Reindex => cmd_reindex(&cli, &ctx),
+        Cmd::Hook(args) => cmd_hook(args, &cli, &ctx),
         #[cfg(feature = "mcp")]
         Cmd::Serve => cmd_serve(&cli, &ctx),
         #[cfg(feature = "studio")]
@@ -95,6 +100,15 @@ fn answer(b: &Brain, mut body: serde_json::Value) -> serde_json::Value {
 }
 
 fn cmd_remember(args: &RememberArgs, cli: &Cli, ctx: &Ctx) -> anyhow::Result<()> {
+    if let Some(path) = &args.batch {
+        return cmd_remember_batch(path, cli, ctx);
+    }
+    // clap enforces this, but it enforces it about flags; the code that has to
+    // read them should say what it needs rather than unwrap and hope.
+    let (Some(subject), Some(predicate)) = (&args.subject, &args.predicate) else {
+        anyhow::bail!("pass --subject and --predicate, or --batch");
+    };
+
     // Parse everything the user supplied before touching the brain, so a bad date
     // or a malformed locator never reaches a transaction.
     let at = args.at.as_deref().map(parse_when).transpose()?;
@@ -115,7 +129,7 @@ fn cmd_remember(args: &RememberArgs, cli: &Cli, ctx: &Ctx) -> anyhow::Result<()>
         (None, None) => anyhow::bail!("pass --value or --entity"),
     };
 
-    let mut a = Assertion::new(&args.subject, &args.predicate, object);
+    let mut a = Assertion::new(subject, predicate, object);
     a.valid_from = at;
     a.valid_to = until;
     a.source = args.source.clone();
@@ -133,7 +147,7 @@ fn cmd_remember(args: &RememberArgs, cli: &Cli, ctx: &Ctx) -> anyhow::Result<()>
     // failed.
     let hint = match args.entity {
         Some(_) => None,
-        None => brain::lint::missed_relation(b.store().conn(), &brain::norm::key(&args.predicate))?,
+        None => brain::lint::missed_relation(b.store().conn(), &brain::norm::key(predicate))?,
     };
 
     if cli.json {
@@ -152,6 +166,119 @@ fn cmd_remember(args: &RememberArgs, cli: &Cli, ctx: &Ctx) -> anyhow::Result<()>
         }
     }
     Ok(())
+}
+
+/// Records many facts as one write.
+///
+/// Everything is parsed before the brain is even opened, and then written in a
+/// single transaction: a batch either lands whole or does not land. That is what
+/// makes it safe for the caller it was built for -- a hook, flushing what a
+/// session learned, with nobody watching. A partial batch would leave that caller
+/// unable to say what it had already recorded, and its only recovery would be to
+/// write everything again and hope reassertion covered the difference.
+fn cmd_remember_batch(path: &std::path::Path, cli: &Cli, ctx: &Ctx) -> anyhow::Result<()> {
+    let text = if path == std::path::Path::new("-") {
+        std::io::read_to_string(std::io::stdin().lock())?
+    } else {
+        std::fs::read_to_string(path)
+            .with_context(|| format!("could not read {}", path.display()))?
+    };
+    let assertions = brain::batch::parse(&text)?;
+
+    let b = open(cli, ctx)?;
+    // An empty batch is not an error. A hook that learned nothing this session
+    // still runs, and a command that fails when there was nothing to do is a
+    // command every caller has to special-case.
+    let outcomes = b.remember_all(&assertions)?;
+
+    // One hint per predicate rather than one per fact: a batch importing forty
+    // owners stored as strings has one problem, not forty.
+    let mut hints: Vec<String> = Vec::new();
+    let mut asked: BTreeSet<String> = BTreeSet::new();
+    for (a, o) in assertions.iter().zip(&outcomes) {
+        if matches!(a.object, Object::Entity(_)) {
+            continue;
+        }
+        let key = brain::norm::key(&o.fact().predicate);
+        if !asked.insert(key.clone()) {
+            continue;
+        }
+        if let Some(h) = brain::lint::missed_relation(b.store().conn(), &key)? {
+            hints.push(h);
+        }
+    }
+
+    let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+    for o in &outcomes {
+        *counts.entry(o.kind()).or_default() += 1;
+    }
+
+    if cli.json {
+        let facts: Vec<_> = outcomes
+            .iter()
+            .map(|o| serde_json::json!({ "outcome": o.kind(), "fact": o.fact() }))
+            .collect();
+        emit(&serde_json::to_string_pretty(&answer(
+            &b,
+            serde_json::json!({ "wrote": outcomes.len(), "counts": counts, "facts": facts, "hints": hints }),
+        ))?);
+    } else {
+        for o in &outcomes {
+            emit(&format!("{}: {}", o.kind(), o.fact().statement));
+        }
+        let tally: Vec<String> = counts.iter().map(|(k, n)| format!("{n} {k}")).collect();
+        emit(&match outcomes.len() {
+            0 => "nothing to record".to_string(),
+            n => format!("{n} facts: {}", tally.join(", ")),
+        });
+        for h in &hints {
+            emit(&format!("warning: {h}"));
+        }
+    }
+    Ok(())
+}
+
+/// Answers a harness lifecycle hook.
+///
+/// The only command here that is not allowed to fail. Everything it could
+/// complain about -- no brain in this directory, unreadable input, a query that
+/// found nothing -- is answered with `{}`, because the alternative is an error
+/// message in somebody's session for a tool they did not invoke. See
+/// [`brain::hook`] for why that rule is absolute.
+fn cmd_hook(args: &brain::cli::HookArgs, cli: &Cli, ctx: &Ctx) -> anyhow::Result<()> {
+    // An explicit off switch, checked before anything is opened. Turning a hook
+    // off should not require editing the settings file that installed it, which
+    // is usually somewhere the person debugging is not looking.
+    if std::env::var("BRAIN_HOOK").is_ok_and(|v| v == "off") {
+        emit("{}");
+        return Ok(());
+    }
+
+    let input = hook_input();
+    let b = open(cli, ctx).ok();
+    // A brain holding a task list holds facts that are true, current and beside
+    // the point on every prompt that is not about them. `--not-scope` is the
+    // existing answer to that; a hook takes no flags, so it reads it from here.
+    let not_scope = std::env::var("BRAIN_HOOK_NOT_SCOPE").ok();
+    let out = brain::hook::payload(args.what, b.as_ref(), &input, not_scope.as_deref());
+    emit(&out.to_string());
+    Ok(())
+}
+
+/// Reads the harness's JSON from stdin.
+///
+/// A terminal is checked for first so that `brain hook recall` typed by hand
+/// answers instead of hanging on a stdin nobody is going to close -- which is
+/// exactly how somebody debugging their hook installation would run it.
+fn hook_input() -> serde_json::Value {
+    use std::io::IsTerminal as _;
+    if std::io::stdin().is_terminal() {
+        return serde_json::Value::Null;
+    }
+    std::io::read_to_string(std::io::stdin().lock())
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or(serde_json::Value::Null)
 }
 
 fn cmd_link(args: &LinkArgs, cli: &Cli, ctx: &Ctx) -> anyhow::Result<()> {
@@ -211,6 +338,12 @@ fn cmd_recall(args: &RecallArgs, cli: &Cli, ctx: &Ctx) -> anyhow::Result<()> {
     if let Some(s) = &args.not_scope {
         q = q.not_scope(s);
     }
+    if let Some(c) = &args.channels {
+        q = q.channels(c);
+    }
+    if args.explain {
+        q = q.explaining();
+    }
 
     let b = open(cli, ctx)?;
     let hits = b.recall(&q)?;
@@ -234,9 +367,112 @@ fn cmd_recall(args: &RecallArgs, cli: &Cli, ctx: &Ctx) -> anyhow::Result<()> {
         }
         for h in &hits {
             emit(&h.fact.statement);
+            if let Some(x) = &h.explain {
+                emit(&format!("    score {:.5}", h.score));
+                let votes: Vec<String> = x
+                    .votes
+                    .iter()
+                    .map(|v| format!("{} #{} +{:.5}", v.channel.as_str(), v.rank, v.points))
+                    .collect();
+                emit(&format!(
+                    "    votes {}  (fused {:.5})",
+                    votes.join(", "),
+                    x.fused
+                ));
+                if !x.demotions.is_empty() {
+                    let rules: Vec<String> = x
+                        .demotions
+                        .iter()
+                        .map(|d| format!("x{:.2} {}", d.factor, d.rule.as_str()))
+                        .collect();
+                    emit(&format!("    rules {}", rules.join(", ")));
+                }
+            }
         }
         if let Some(l) = &learned {
             emit(&format!("(learned: {:?} names {})", l.alias, l.entity));
+        }
+    }
+    Ok(())
+}
+
+/// Lists every record whose text contains a string.
+///
+/// Same output contract as `which`, because it makes the same promise: these are
+/// all of them, and the count says so when they are not.
+fn cmd_find(args: &brain::cli::FindArgs, cli: &Cli, ctx: &Ctx) -> anyhow::Result<()> {
+    let mut q = FindQuery::new(&args.needle).limit(args.limit);
+    if let Some(w) = &args.as_of {
+        q = q.when(When::AsOf(parse_when(w)?));
+    }
+    if args.history {
+        q = q.when(When::History);
+    }
+    if let Some(s) = &args.scope {
+        q = q.scope(s);
+    }
+    if let Some(s) = &args.not_scope {
+        q = q.not_scope(s);
+    }
+
+    let b = open(cli, ctx)?;
+    let found = b.find(&q)?;
+
+    if cli.json {
+        emit(&serde_json::to_string_pretty(&answer(
+            &b,
+            serde_json::json!({
+                "needle": args.needle,
+                "matched": found.matched,
+                "truncated": found.truncated,
+                "facts": found.facts,
+            }),
+        ))?);
+    } else {
+        if found.facts.is_empty() {
+            emit("(nothing mentions that)");
+        }
+        for h in &found.facts {
+            emit(&h.fact.statement);
+        }
+        if found.truncated {
+            emit(&format!(
+                "({} of {} -- raise --limit to see the rest)",
+                found.facts.len(),
+                found.matched
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Lists the properties this brain records.
+///
+/// The read that makes `which` usable. `which` starts from a predicate key, and
+/// until this existed there was no way to learn which keys a brain holds short of
+/// opening the file in a SQLite shell -- which is exactly what agents did.
+fn cmd_predicates(cli: &Cli, ctx: &Ctx) -> anyhow::Result<()> {
+    let b = open(cli, ctx)?;
+    let rows = b.predicates()?;
+
+    if cli.json {
+        emit(&serde_json::to_string_pretty(&answer(
+            &b,
+            serde_json::json!({ "predicates": rows }),
+        ))?);
+    } else if rows.is_empty() {
+        emit("(this brain records nothing yet)");
+    } else {
+        for p in &rows {
+            let kind = if p.relational { "relation" } else { "literal" };
+            emit(&format!(
+                "{:<24} {:<8} {:<9} {} facts, {} subjects",
+                p.key,
+                p.cardinality.as_str(),
+                kind,
+                p.facts,
+                p.subjects
+            ));
         }
     }
     Ok(())
@@ -692,6 +928,7 @@ fn cmd_stats(cli: &Cli, ctx: &Ctx) -> anyhow::Result<()> {
 
     let mut out = store.identity();
     out["created_at"] = serde_json::json!(store.created_at().to_string());
+    out["schema"] = serde_json::json!(store.schema_version());
     out["entities"] = serde_json::json!(report.entities);
     out["facts"] = serde_json::json!(report.facts);
     out["relations"] = serde_json::json!(report.edges);
@@ -703,6 +940,10 @@ fn cmd_stats(cli: &Cli, ctx: &Ctx) -> anyhow::Result<()> {
         emit(&format!("{} ({})", store.label(), store.path().display()));
         emit(&format!("  id:      {}", store.id()));
         emit(&format!("  created: {}", store.created_at()));
+        // Reported next to the identity because it is the only thing that tells
+        // two `brain` builds apart: the crate version does not move when the
+        // on-disk layout does, so `--version` cannot answer "is my binary old".
+        emit(&format!("  schema:  v{}", store.schema_version()));
         emit(&format!(
             "  holds:   {} entities, {} facts, {} of them relations",
             report.entities, report.facts, report.edges

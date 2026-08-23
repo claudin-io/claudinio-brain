@@ -58,6 +58,23 @@ impl Channel {
     /// The channels that retrieve from a fact's own content. The graph channel
     /// is not one of them: it expands what these find.
     const CONTENT: &'static [Channel] = &[Channel::Bm25, Channel::Alias, Channel::Semantic];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Bm25 => "bm25",
+            Self::Alias => "alias",
+            Self::Semantic => "semantic",
+            Self::Graph => "graph",
+            Self::Kin => "kin",
+        }
+    }
+
+    /// The names an agent is allowed to type. Matched against [`Self::as_str`]
+    /// rather than against a second list, so the two can never disagree about
+    /// what a channel is called.
+    pub fn parse(s: &str) -> Option<Self> {
+        Self::ALL.iter().copied().find(|c| c.as_str() == s)
+    }
 }
 
 /// How the timeline is filtered.
@@ -82,6 +99,8 @@ pub struct RecallQuery {
     /// A namespace to keep *out* of the answer.
     pub not_scope: Option<String>,
     pub channels: Vec<Channel>,
+    /// Whether each hit carries the arithmetic that put it there.
+    pub explain: bool,
 }
 
 impl RecallQuery {
@@ -93,6 +112,7 @@ impl RecallQuery {
             scope: None,
             not_scope: None,
             channels: Channel::ALL.to_vec(),
+            explain: false,
         }
     }
 
@@ -125,6 +145,14 @@ impl RecallQuery {
         self.channels = c.to_vec();
         self
     }
+
+    /// Asks every hit to carry its own arithmetic. Off by default: an
+    /// explanation is several times the size of the answer it explains, and the
+    /// caller that wants one knows it does.
+    pub fn explaining(mut self) -> Self {
+        self.explain = true;
+        self
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -133,6 +161,80 @@ pub struct Hit {
     pub score: f64,
     /// Every channel that surfaced this fact, sorted for stable output.
     pub channels: Vec<Channel>,
+    /// The arithmetic behind [`Hit::score`], when it was asked for. Absent
+    /// otherwise, and absent rather than empty: a caller that did not ask must
+    /// not have to tell "no explanation" from "explained, and nothing happened".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub explain: Option<Explain>,
+}
+
+/// One channel's contribution to a fused score.
+#[derive(Debug, Clone, Serialize)]
+pub struct Vote {
+    pub channel: Channel,
+    /// Where this channel ranked the fact, counting from 1 -- the number that
+    /// went into the RRF denominator, not an index.
+    pub rank: usize,
+    /// `1 / (RRF_K + rank)`, i.e. what this vote was worth.
+    pub points: f64,
+}
+
+/// A re-ranking rule that fired on a fact, and what it cost.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Rule {
+    /// See [`BRIDGE_DEMOTION`]: an edge the walk crossed on the way somewhere.
+    Bridge,
+    /// See [`OFF_TOPIC_DEMOTION`]: an entity the question neither named nor
+    /// reached.
+    OffTopic,
+    /// See [`UNASKED_PREDICATE_DEMOTION`]: the question named a predicate, and
+    /// this is not it.
+    UnaskedPredicate,
+    /// See [`RARE_TERM_MISS_DEMOTION`]: the question named a term the brain
+    /// barely uses, and this fact does not contain it.
+    RareTermMiss,
+}
+
+impl Rule {
+    /// The name in both outputs. One list, so the JSON and the printed line can
+    /// never call the same rule two things.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Bridge => "bridge",
+            Self::OffTopic => "off-topic",
+            Self::UnaskedPredicate => "unasked-predicate",
+            Self::RareTermMiss => "rare-term-miss",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct Demotion {
+    pub rule: Rule,
+    pub factor: f64,
+}
+
+/// Why a fact is in the answer, and why it is where it is.
+///
+/// `recall` fuses five channels and then multiplies the result by up to three
+/// re-ranking rules, and every one of those steps is a judgement about intent.
+/// `--channels` could already isolate a retriever, which answers *which channel
+/// found this*; it cannot answer *why this fact outranks that one*, because the
+/// contest happens between channels and after them. Reading the same ranking
+/// twice with different flags is not an explanation, it is a bisection.
+///
+/// The invariant worth checking, and the reason the parts are reported
+/// separately: `fused` is the sum of `votes`, and `score` is `fused` times every
+/// factor in `demotions`. Nothing else touches a score.
+#[derive(Debug, Clone, Serialize)]
+pub struct Explain {
+    /// Every channel that voted, in channel order.
+    pub votes: Vec<Vote>,
+    /// What the votes summed to, before any rule applied.
+    pub fused: f64,
+    /// The rules that fired, in the order they were applied.
+    pub demotions: Vec<Demotion>,
 }
 
 /// Reciprocal rank fusion constant. 60 is the value from the original TREC work
@@ -264,6 +366,107 @@ const OFF_TOPIC_DEMOTION: f64 = 0.5;
 /// stronger verdict, and the difference should not be blurred.
 const UNASKED_PREDICATE_DEMOTION: f64 = 0.5;
 
+/// What a fused score is multiplied by when the question names a term the brain
+/// almost never uses and this fact does not contain it.
+///
+/// This is [`OFF_TOPIC_DEMOTION`] for a question that names no entity, and it
+/// exists because that rule is inert exactly when it is needed most. A question
+/// like `_normalize_email` points at nothing the brain has a name for, so there
+/// is no neighbourhood, so nothing can be off its topic -- and meanwhile the
+/// semantic channel has answered anyway, because a vector index always answers.
+/// Traversal and kinship then expand from *those* hits, and the result is three
+/// channels agreeing about a fact that has nothing to do with the question while
+/// the one fact containing the term has a single vote from BM25.
+///
+/// That is not hypothetical. On a 566-fact brain, `recall "_normalize_email"`
+/// returned `v2_starter yearly_discount 18 percent` first and put the record that
+/// literally contains the identifier at **rank 12** -- past the default limit,
+/// therefore invisible. The agent that hit it went and read the SQLite file by
+/// hand, which is the honest verdict on a retrieval system.
+///
+/// A rare term is the address such a question has. Nothing arrives at a term the
+/// brain uses three times by resembling something; it arrives by being about it.
+/// So a fact that contains none of the question's rare terms is here on the
+/// weakest evidence there is, and goes below the facts that do.
+///
+/// Inert three ways, all of them load-bearing:
+///
+/// - **The question named an entity.** Then it has a real address and
+///   [`OFF_TOPIC_DEMOTION`] is the rule that applies; two rules pushing on the
+///   same contest would just be one rule with an unexamined constant.
+/// - **No term is rare.** A question made of common words says nothing specific
+///   enough to demote anything for missing.
+/// - **A rare term matches nothing.** Every candidate takes the factor, and a
+///   uniform multiplication leaves the ranking exactly where it was.
+///
+/// The gate on `from_question` is not tidiness, it is what keeps this from
+/// fighting [`BRIDGE_DEMOTION`]. "de que pais vem o produto_a" names an entity;
+/// the answer (`acme pais brasil`) does not contain `produto_a` while the bridge
+/// that was crossed to reach it does. Ungated, this rule would promote the road
+/// over the destination -- the precise failure the graph suite exists to catch.
+///
+/// Swept, with the same verdict the two rules above got: 1.0 is the only value
+/// that changes anything.
+///
+/// | rare-term miss | retrieval R@1 | retrieval top-1 |
+/// |---|---|---|
+/// | 1.00 (off) | 0.865 | 0.885 |
+/// | 0.95 | **0.942** | **0.962** |
+/// | 0.75 | 0.942 | 0.962 |
+/// | **0.50** | 0.942 | 0.962 |
+/// | 0.25 | 0.942 | 0.962 |
+///
+/// Nothing moves on `temporal`, `graph`, `alias`, `kin` or the holdout at any
+/// setting -- including 1.0. That is the shape this rule should have: it fires
+/// only where a question points at no entity, and those four suites are made of
+/// questions that point at one.
+///
+/// The holdout says the weaker of the two things a holdout can say. It does not
+/// move, so this breaks nothing on 24 cases nobody tuned against; it does not
+/// improve either, because it holds no case of this shape. That is not the same
+/// as generalizing, and the difference should not be blurred -- see the same
+/// distinction drawn for [`UNASKED_PREDICATE_DEMOTION`].
+///
+/// 0.5 rather than the equally-scoring 0.95, for the reason given on
+/// [`OFF_TOPIC_DEMOTION`]: these contests are RRF near-ties, a near-tie yields to
+/// any nudge at all, and a factor that only works when the margin is already
+/// negligible stops working as the brain grows. On the 566-fact brain this was
+/// found in, the losing fact trailed by 34%, not by 5%.
+const RARE_TERM_MISS_DEMOTION: f64 = 0.5;
+
+/// How many facts a term may appear in and still count as rare.
+///
+/// An absolute count rather than a share of the brain, because the property that
+/// matters is absolute: a term appearing in three facts identifies those three
+/// facts, whether the brain holds fifty or fifty thousand. A share would make the
+/// same term rare in a big brain and common in a small one, which inverts the
+/// intent -- in a small brain there is even less room for a coincidence.
+///
+/// **The suites cannot price this one, and this comment does not pretend they
+/// can.** Sweeping 1/3/5/10/20 moves no figure on any suite including the
+/// holdout, for a reason that is structural rather than lucky: an eval brain
+/// holds around thirty facts, so every term in it is under twenty and every
+/// setting selects the same terms. All the sweep establishes is that no value
+/// breaks anything.
+///
+/// 5 comes from the brain the failure was found in, where the numbers are real:
+/// the tokens of `_normalize_email` appear in 1 and 5 facts out of 566, while the
+/// common words of an ordinary question appear in dozens. The gap is wide enough
+/// that anything from 1 to about 20 would have selected the same terms there too
+/// -- which is the honest reason to stop worrying about the exact value, and the
+/// reason to revisit it against a real brain rather than against these suites if
+/// it ever misbehaves.
+const RARE_TERM_MAX_FACTS: i64 = 5;
+
+/// How many of a question's terms are priced for rarity.
+///
+/// A bound on work, not a quality setting, in the same spirit as
+/// [`MAX_QUERY_WORDS`]: each term costs one indexed count, and a question does
+/// not need sixteen distinct words to have said what it is about. Terms past the
+/// cut are dropped in order rather than sampled, so the same text always asks the
+/// same question.
+const MAX_RARITY_TERMS: usize = 16;
+
 /// Minimum cosine similarity for a semantic hit to count.
 ///
 /// Nearest-neighbour search always returns *something* -- there is no such thing
@@ -298,6 +501,7 @@ impl Brain {
         // Rank per channel, then fuse. `fused` maps fact id -> (rrf score,
         // channels), in a BTreeMap so iteration order never varies by run.
         let mut fused: BTreeMap<i64, (f64, Vec<Channel>)> = BTreeMap::new();
+        let mut trace = Trace::new(q.explain);
         for channel in Channel::CONTENT.iter().filter(|c| q.channels.contains(c)) {
             let ids = match channel {
                 Channel::Bm25 => bm25_channel(conn, &q.text, &filter)?,
@@ -307,7 +511,7 @@ impl Brain {
                     unreachable!("expansion channels expand, they do not retrieve")
                 }
             };
-            fuse(&mut fused, ids, *channel);
+            fuse(&mut fused, ids, *channel, &mut trace);
         }
 
         // The two expansion channels run last because they widen what the others
@@ -319,8 +523,8 @@ impl Brain {
         if q.channels.contains(&Channel::Graph) {
             let walk = self.walk(conn, q, &filter, &anchors.ids)?;
             focus.entities.extend(&walk.reached);
-            fuse(&mut fused, walk.ranked.clone(), Channel::Graph);
-            demote_bridges(&mut fused, &walk);
+            fuse(&mut fused, walk.ranked.clone(), Channel::Graph, &mut trace);
+            demote_bridges(&mut fused, &walk, &mut trace);
         }
 
         // Kinship after the walk, so an entity an edge already reached keeps the
@@ -330,10 +534,10 @@ impl Brain {
             let kin = crate::kin::related(conn, &anchors.ids, &filter)?;
             focus.entities.extend(kin.iter().map(|k| k.entity_id));
             let ids = kin_channel(conn, &kin, &filter, &normalized_terms(&q.text))?;
-            fuse(&mut fused, ids, Channel::Kin);
+            fuse(&mut fused, ids, Channel::Kin, &mut trace);
         }
 
-        self.refocus(conn, &mut fused, &focus, &normalized_terms(&q.text))?;
+        self.refocus(conn, &mut fused, &focus, &q.text, &mut trace)?;
 
         let mut order: Vec<(i64, f64, Vec<Channel>)> = fused
             .into_iter()
@@ -356,6 +560,7 @@ impl Brain {
                 fact: self.fact(id)?,
                 score,
                 channels,
+                explain: trace.explain(id),
             });
         }
         Ok(hits)
@@ -363,11 +568,77 @@ impl Brain {
 }
 
 /// Adds one channel's ranking to the fusion.
-fn fuse(fused: &mut BTreeMap<i64, (f64, Vec<Channel>)>, ids: Vec<i64>, channel: Channel) {
+fn fuse(
+    fused: &mut BTreeMap<i64, (f64, Vec<Channel>)>,
+    ids: Vec<i64>,
+    channel: Channel,
+    trace: &mut Trace,
+) {
     for (rank, id) in ids.into_iter().enumerate() {
+        let rank = rank + 1;
+        let points = 1.0 / (RRF_K + rank as f64);
         let e = fused.entry(id).or_insert((0.0, Vec::new()));
-        e.0 += 1.0 / (RRF_K + (rank + 1) as f64);
+        e.0 += points;
         e.1.push(channel);
+        trace.vote(id, channel, rank, points);
+    }
+}
+
+/// The arithmetic, written down as it happens.
+///
+/// Every method returns immediately when nobody asked, so an ordinary `recall`
+/// pays one branch per vote and allocates nothing. The alternative -- deriving
+/// the explanation afterwards from the answer -- would have to re-run the
+/// channels to learn what they ranked, and a second run of a rule is a second
+/// opinion, not a record of the first.
+#[derive(Default)]
+struct Trace {
+    on: bool,
+    votes: BTreeMap<i64, Vec<Vote>>,
+    demotions: BTreeMap<i64, Vec<Demotion>>,
+}
+
+impl Trace {
+    fn new(on: bool) -> Self {
+        Self {
+            on,
+            ..Default::default()
+        }
+    }
+
+    fn vote(&mut self, id: i64, channel: Channel, rank: usize, points: f64) {
+        if !self.on {
+            return;
+        }
+        self.votes.entry(id).or_default().push(Vote {
+            channel,
+            rank,
+            points,
+        });
+    }
+
+    fn demote(&mut self, id: i64, rule: Rule, factor: f64) {
+        if !self.on {
+            return;
+        }
+        self.demotions
+            .entry(id)
+            .or_default()
+            .push(Demotion { rule, factor });
+    }
+
+    /// Consumes what was recorded about one fact. Called once per reported hit,
+    /// so the map shrinks to what nobody asked about and is dropped with it.
+    fn explain(&mut self, id: i64) -> Option<Explain> {
+        if !self.on {
+            return None;
+        }
+        let votes = self.votes.remove(&id).unwrap_or_default();
+        Some(Explain {
+            fused: votes.iter().map(|v| v.points).sum(),
+            votes,
+            demotions: self.demotions.remove(&id).unwrap_or_default(),
+        })
     }
 }
 
@@ -433,7 +704,7 @@ struct Walk {
 /// demoted, and the route may be longer than one edge: reaching a contact through
 /// a supplier makes *both* hops roads, even though the middle entity contributed
 /// no answer of its own.
-fn demote_bridges(fused: &mut BTreeMap<i64, (f64, Vec<Channel>)>, walk: &Walk) {
+fn demote_bridges(fused: &mut BTreeMap<i64, (f64, Vec<Channel>)>, walk: &Walk, trace: &mut Trace) {
     for edge_id in &walk.roads {
         let asked_for = walk
             .bridge_predicates
@@ -444,6 +715,7 @@ fn demote_bridges(fused: &mut BTreeMap<i64, (f64, Vec<Channel>)>, walk: &Walk) {
         }
         if let Some(entry) = fused.get_mut(edge_id) {
             entry.0 *= BRIDGE_DEMOTION;
+            trace.demote(*edge_id, Rule::Bridge, BRIDGE_DEMOTION);
         }
     }
 }
@@ -480,11 +752,17 @@ impl Brain {
 
     /// Pushes down what the question did not ask for.
     ///
-    /// Two independent rules, both multiplicative on the fused score and both
+    /// Three independent rules, all multiplicative on the fused score and all
     /// inert unless the question said something specific enough to apply them:
-    /// see [`OFF_TOPIC_DEMOTION`] and [`UNASKED_PREDICATE_DEMOTION`]. A fact can
-    /// take both, which is correct -- an unrelated entity's unrelated predicate
-    /// is wrong twice.
+    /// see [`OFF_TOPIC_DEMOTION`], [`UNASKED_PREDICATE_DEMOTION`] and
+    /// [`RARE_TERM_MISS_DEMOTION`]. A fact can take more than one, which is
+    /// correct -- an unrelated entity's unrelated predicate is wrong twice.
+    ///
+    /// The first and third never fire together, by construction: one applies when
+    /// the question named an entity and the other when it did not. They are the
+    /// same idea -- *a fact that arrived by resemblance ranks below one that
+    /// arrived by address* -- reading the address off whichever the question
+    /// actually supplied.
     ///
     /// Deliberately a re-rank of the fused set rather than a filter on it.
     /// Nothing is removed, because every one of these signals is a guess about
@@ -495,10 +773,17 @@ impl Brain {
         conn: &Connection,
         fused: &mut BTreeMap<i64, (f64, Vec<Channel>)>,
         focus: &Focus,
-        terms: &[String],
+        text: &str,
+        trace: &mut Trace,
     ) -> std::result::Result<(), BrainError> {
-        let asked = named_predicates(conn, terms)?;
-        if fused.is_empty() || (asked.is_empty() && !focus.from_question) {
+        let asked = named_predicates(conn, &normalized_terms(text))?;
+        // Only looked up when it could apply, so a question with an address pays
+        // nothing for a rule that would be inert anyway.
+        let rare = match focus.from_question {
+            true => None,
+            false => rare_term_hits(conn, text)?,
+        };
+        if fused.is_empty() || (asked.is_empty() && !focus.from_question && rare.is_none()) {
             return Ok(());
         }
 
@@ -512,9 +797,15 @@ impl Brain {
                 || shape.object.is_some_and(|o| focus.entities.contains(&o));
             if focus.from_question && !near {
                 *score *= OFF_TOPIC_DEMOTION;
+                trace.demote(*id, Rule::OffTopic, OFF_TOPIC_DEMOTION);
             }
             if !asked.is_empty() && !asked.contains(&shape.predicate) {
                 *score *= UNASKED_PREDICATE_DEMOTION;
+                trace.demote(*id, Rule::UnaskedPredicate, UNASKED_PREDICATE_DEMOTION);
+            }
+            if rare.as_ref().is_some_and(|hits| !hits.contains(id)) {
+                *score *= RARE_TERM_MISS_DEMOTION;
+                trace.demote(*id, Rule::RareTermMiss, RARE_TERM_MISS_DEMOTION);
             }
         }
         Ok(())
@@ -567,6 +858,59 @@ impl Brain {
             asked,
         })
     }
+}
+
+/// The facts containing any term the question uses and the brain barely does.
+///
+/// `None` means the rule does not apply: the question has no rare term, so
+/// nothing may be demoted for missing one. An empty set is a different answer and
+/// a legitimate one -- every rare term matched something once, and the fused
+/// candidates simply are not those facts.
+///
+/// Rarity is measured against the whole brain rather than against the temporally
+/// filtered answer set, on purpose. It is a property of the *vocabulary* -- how
+/// unusual a word is here -- and a word does not become distinctive because the
+/// facts using it happen to have closed.
+///
+/// Both queries go through `fact_fts`, so "contains" means exactly what the BM25
+/// channel means by it, accents and stemming included. A rule that decided
+/// containment differently from the channel it is arbitrating would be settling
+/// the argument with a third opinion.
+fn rare_term_hits(
+    conn: &Connection,
+    text: &str,
+) -> std::result::Result<Option<BTreeSet<i64>>, BrainError> {
+    let mut seen = BTreeSet::new();
+    let terms: Vec<String> = fts_terms(text)
+        .into_iter()
+        .filter(|t| seen.insert(t.clone()))
+        .take(MAX_RARITY_TERMS)
+        .collect();
+    if terms.is_empty() {
+        return Ok(None);
+    }
+
+    let mut count = conn.prepare("SELECT count(*) FROM fact_fts WHERE fact_fts MATCH ?")?;
+    let mut rare = Vec::new();
+    for t in &terms {
+        let n: i64 = count.query_row([format!("\"{t}\"")], |r| r.get(0))?;
+        // Zero is not rare, it is absent. A term the brain has never seen
+        // describes no facts, so it cannot say which ones are on topic -- and
+        // treating it as maximally rare would demote the entire candidate set for
+        // a typo.
+        if (1..=RARE_TERM_MAX_FACTS).contains(&n) {
+            rare.push(format!("\"{t}\""));
+        }
+    }
+    if rare.is_empty() {
+        return Ok(None);
+    }
+
+    let mut stmt = conn.prepare("SELECT rowid FROM fact_fts WHERE fact_fts MATCH ?")?;
+    let hits = stmt
+        .query_map([rare.join(" OR ")], |r| r.get(0))?
+        .collect::<rusqlite::Result<BTreeSet<i64>>>()?;
+    Ok(Some(hits))
 }
 
 /// The terms of a question that are predicate keys the brain already holds.
@@ -985,6 +1329,27 @@ pub(crate) fn normalized_terms(text: &str) -> Vec<String> {
     out
 }
 
+/// The searchable words of a question, split the way FTS5 splits them.
+///
+/// Shared by the BM25 channel and by the rarity rule so the two cannot disagree
+/// about what a term is -- a rule that arbitrates a channel has to be counting
+/// the same things the channel matched on.
+///
+/// Quotes are stripped rather than escaped: they are punctuation here, and a term
+/// carrying one would reopen the syntax hole [`fts_query`] closes.
+fn fts_terms(text: &str) -> Vec<String> {
+    text.split(|c: char| !c.is_alphanumeric())
+        .filter(|t| !t.is_empty())
+        .take(MAX_QUERY_WORDS)
+        // Single characters carry almost no signal in Latin scripts and blow up
+        // the candidate set. Non-ASCII single characters are kept: one CJK
+        // character is a word.
+        .filter(|t| t.chars().count() > 1 || !t.is_ascii())
+        .map(|t| t.replace('"', ""))
+        .filter(|t| !t.is_empty())
+        .collect()
+}
+
 /// Builds an FTS5 MATCH expression from free text.
 ///
 /// Every token is quoted, which makes FTS5 treat it as a literal string rather
@@ -992,15 +1357,9 @@ pub(crate) fn normalized_terms(text: &str) -> Vec<String> {
 /// bare `NEAR(`, or even the word "AND" would be a query-syntax error surfacing
 /// to the user as a brain failure.
 fn fts_query(text: &str) -> Option<String> {
-    let terms: Vec<String> = text
-        .split(|c: char| !c.is_alphanumeric())
-        .filter(|t| !t.is_empty())
-        .take(MAX_QUERY_WORDS)
-        // Single characters carry almost no signal in Latin scripts and blow up
-        // the candidate set. Non-ASCII single characters are kept: one CJK
-        // character is a word.
-        .filter(|t| t.chars().count() > 1 || !t.is_ascii())
-        .map(|t| format!("\"{}\"", t.replace('"', "")))
+    let terms: Vec<String> = fts_terms(text)
+        .into_iter()
+        .map(|t| format!("\"{t}\""))
         .collect();
 
     if terms.is_empty() {

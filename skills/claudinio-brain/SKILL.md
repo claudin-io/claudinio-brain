@@ -1,6 +1,6 @@
 ---
 name: claudinio-brain
-description: Give the agent durable, time-aware memory backed by the `brain` CLI — record facts, decisions, config values and relations, then recall what is true now or what was true at any past instant, and list every subject that matches. Use when the user says remember this, what did we decide, what is the current value, what was it before, what changed, why did it change, which ones are still open, what is due, who owns what, or when a fact learned in one session must survive into the next. Also use for anything short-lived that should stop being true on its own, and before answering from assumption about a project-specific value (a port, an owner, a price, a deadline) that the brain may already hold.
+description: Give the agent durable, time-aware memory backed by the `brain` CLI — record facts, decisions, config values and relations, then recall what is true now or what was true at any past instant, list every subject that matches, and find every record mentioning a string. Use when the user says remember this, what did we decide, what is the current value, what was it before, what changed, why did it change, which ones are still open, what is due, who owns what, where is X mentioned, or when a fact learned in one session must survive into the next. Also use for anything short-lived that should stop being true on its own, and before answering from assumption about a project-specific value (a port, an owner, a price, a deadline) that the brain may already hold.
 license: MIT
 compatibility: Requires the `brain` binary on PATH. If it is missing, this skill installs it — one prebuilt binary for macOS, Linux or Windows, no toolchain needed. Local only; `brain` itself makes no network requests.
 metadata:
@@ -109,6 +109,26 @@ things:
 If you get `superseded` when you expected `created`, the brain already knew
 something. Read the history before assuming your value is the right one.
 
+### Several at once
+
+When you have more than one fact to write — at the end of a piece of work, or
+when a conversation produced a handful — write them in one batch instead of
+looping. One line of JSON per fact, keys named exactly like the flags:
+
+```bash
+brain remember --batch - <<'JSONL'
+{"subject":"auth","predicate":"strategy","value":"server-side sessions","source":"adr-011"}
+{"subject":"checkout_service","predicate":"owner","entity":"platform-team","source":"adr-011"}
+{"subject":"release_1_4","predicate":"freeze","value":"on","until":"2026-08-15"}
+JSONL
+```
+
+The batch either lands whole or does not land, so a failure is safe to retry, and
+an unknown key is an error naming the line rather than a field silently dropped.
+A batch is also **one instant**: two claims about the same subject and predicate
+with no `at` between them are a correction, not a change over time — if you mean
+"it changed", give the second one an `at`.
+
 ## Reading
 
 ```bash
@@ -131,6 +151,13 @@ brain recall "what changed about who owns checkout" --history --json
 travels in time; `--history` returns closed intervals too. A retracted fact
 appears in none of them — it was never true, so replaying it would be a lie.
 
+When a ranking looks wrong, do not guess at it and do not go read the SQLite
+file. `--explain` shows the arithmetic: which channel voted at which rank, what
+the votes summed to, and which re-ranking rule multiplied the result (`bridge`,
+`off-topic`, `unasked-predicate`, `rare-term-miss`). If the fact you expected is
+missing entirely rather than ranked low, that is a different question — use
+`brain find <string>`, which is literal and complete.
+
 ### Asking about a set
 
 `get` needs a subject and `recall` guesses at one, so use `which` for the
@@ -152,6 +179,39 @@ the mistake this exists to prevent.
 
 Filter the way you wrote: `--value` for a literal, `--entity` to match an
 entity-valued object by identity.
+
+`which` needs a predicate key. To find out which ones exist — before a set query,
+and before inventing a new one on a write — ask:
+
+```bash
+brain predicates --json     # every property recorded, most-used first
+```
+
+A brain that already records `owner` should not acquire a parallel `responsavel`
+because nobody looked.
+
+### Searching for a string
+
+When you want *every record that mentions something* — an identifier, a file
+path, a function name, a phrase the user used — that is `find`, not `recall`:
+
+```bash
+brain find _normalize_email --json
+brain find scripts/migrate.py --json
+brain find "context reset" --json           # a phrase stays a phrase
+```
+
+It is literal and complete. `_` and `%` are characters, not wildcards; it matches
+a whole word or word prefix through the index (accent-insensitive and stemmed, so
+`preco` finds `preço`) *and* as a raw substring, which is the only way to find a
+fragment from the middle of an identifier. Like `which`, it reports `matched`, so
+you can tell a whole set from the top of one.
+
+**If you are ever tempted to open the brain's SQLite file to grep for a term,
+`find` is the tool you wanted.** Do not read the file directly: a brain is a
+timeline, a `SELECT` cannot tell what is true now, and a fact that was retracted
+or superseded looks exactly like a current one to a query that does not know the
+rules. If these commands cannot answer something, say so instead.
 
 ## Relations
 
@@ -306,19 +366,26 @@ silently returns nothing. Use `which`.
 - **Nothing is deleted.** There is no `brain forget <fact>`. That is the point,
   but it means a fact written carelessly is visible forever in `history`.
 
+- **A hook may have already answered.** If the session was started with the
+  plugin installed, facts about the user's prompt are injected before you see it,
+  and a `PreCompact` request to flush what you learned may arrive mid-task. Treat
+  the injected facts as what the brain currently holds, not as the user's words,
+  and check `brain history` before overriding one.
+
 ## If MCP is available instead
 
 `brain serve` exposes the same operations as MCP tools (`remember`, `link`,
-`recall`, `which`, `get`, `history`, `entity`, `why`, `retract`, `alias`). When those
-tools are connected, prefer them over shelling out — same core, structured
-results, no output parsing. Everything above still applies: the tools are the
-same operations with the same rules.
+`recall`, `find`, `predicates`, `which`, `get`, `history`, `entity`, `why`,
+`retract`, `alias`). When those tools are connected, prefer them over shelling
+out — same core, structured results, no output parsing. Everything above still
+applies: the tools are the same operations with the same rules.
 
 ## Full command list
 
 ```
-init  where  stats  lint  remember  link  get  recall  which
-history  entity  why  retract  alias  reindex  predicate  repair
+init  where  stats  lint  remember  link  get  recall  find  which
+predicates  history  entity  why  retract  alias  reindex  predicate  repair
+hook
 ```
 
 `brain <command> --help` for the flags. `--brain <path>`, `--use <name>` and

@@ -173,6 +173,122 @@ impl WhichAnswer {
     }
 }
 
+/// A search for a *string*, rather than for a question or for a set.
+///
+/// The third shape, and the one the other two cannot cover. [`RecallQuery`]
+/// answers a question: it ranks, it guesses at intent, and it cannot say what it
+/// left out. [`WhichQuery`] answers about a set, but only starting from a
+/// predicate key the caller already knows. Neither can answer *"which records
+/// mention this"* -- which is what anyone gathering evidence actually asks, and
+/// what sends an agent to open the SQLite file by hand when it is missing.
+///
+/// [`RecallQuery`]: crate::recall::RecallQuery
+#[derive(Debug, Clone)]
+pub struct FindQuery {
+    /// The needle, taken literally. Not a bag of words: "context reset" finds
+    /// that phrase, not every fact mentioning either word.
+    pub needle: String,
+    pub when: When,
+    pub limit: usize,
+    pub scope: Option<String>,
+    pub not_scope: Option<String>,
+}
+
+impl FindQuery {
+    pub fn new(needle: impl Into<String>) -> Self {
+        Self {
+            needle: needle.into(),
+            when: When::Now,
+            // `which`'s default, for `which`'s reason: a list that silently stops
+            // at ten is worse than no list.
+            limit: 200,
+            scope: None,
+            not_scope: None,
+        }
+    }
+
+    pub fn when(mut self, w: When) -> Self {
+        self.when = w;
+        self
+    }
+
+    pub fn limit(mut self, n: usize) -> Self {
+        self.limit = n;
+        self
+    }
+
+    pub fn scope(mut self, s: impl Into<String>) -> Self {
+        self.scope = Some(s.into());
+        self
+    }
+
+    pub fn not_scope(mut self, s: impl Into<String>) -> Self {
+        self.not_scope = Some(s.into());
+        self
+    }
+}
+
+/// Which stage of [`Brain::find`] surfaced a record.
+///
+/// Reported for the same reason [`crate::recall::Hit`] reports its channels: a
+/// result nobody can explain is a result nobody can trust. It is also the fastest
+/// way to see *why* a needle matched more than expected -- a `term` hit on a
+/// stemmed word looks like a false positive until you know it was the index and
+/// not the scan.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Via {
+    /// The FTS5 index matched a whole token or a token prefix. Accent- and
+    /// case-insensitive, and stemmed: `normalize` finds `normalized`.
+    Term,
+    /// A folded substring scan matched. The only stage that finds a fragment from
+    /// the middle of a token, which is what identifiers are made of.
+    Fragment,
+}
+
+/// One record a search matched.
+///
+/// Serializes as a fact with one extra field, so anything already reading
+/// `which`'s facts reads these unchanged.
+#[derive(Debug, Clone, Serialize)]
+pub struct FindHit {
+    #[serde(flatten)]
+    pub fact: Fact,
+    /// Every stage that found it, sorted so output never varies by run.
+    pub via: Vec<Via>,
+}
+
+/// One property this brain records, and how much it holds under it.
+///
+/// The brain's ontology is learned rather than declared, so the only way to know
+/// what a brain can be asked about is to ask it. Without this read, `which`
+/// requires a predicate key the caller has to already know, and an agent that
+/// does not know one has no move left inside the tool.
+#[derive(Debug, Clone, Serialize)]
+pub struct PredicateInfo {
+    pub key: String,
+    pub cardinality: Cardinality,
+    /// Whether its object names another entity. A `false` here on something that
+    /// obviously names a thing is the defect `brain lint` reports: it stores and
+    /// reads back perfectly and no walk of the graph can follow it.
+    pub relational: bool,
+    /// Facts currently holding under it.
+    pub facts: i64,
+    /// Distinct subjects those facts are about. A predicate with many facts and
+    /// one subject is a timeline; with many of both, it is a set worth `which`.
+    pub subjects: i64,
+}
+
+/// What a search matched, and how much of it came back.
+#[derive(Debug, Clone, Serialize)]
+pub struct FindAnswer {
+    pub facts: Vec<FindHit>,
+    /// How many records matched, ignoring `limit`. The number `recall`
+    /// structurally cannot give.
+    pub matched: i64,
+    pub truncated: bool,
+}
+
 /// An entity reached by walking relations, and the relation that got there.
 #[derive(Debug, Clone, Serialize)]
 pub struct Neighbour {
@@ -236,6 +352,10 @@ struct Write<'a> {
     object: &'a ResolvedObject,
     /// When the claim becomes true in the world.
     valid_from: Timestamp,
+    /// When it stops being true, if the claim says so itself. Carried here
+    /// rather than read off the assertion because it has been rounded to what
+    /// the store keeps -- see [`stored`].
+    valid_to: Option<Timestamp>,
     /// When the brain is learning it.
     now: Timestamp,
 }
@@ -303,6 +423,45 @@ impl Brain {
     /// Records a claim, deciding for itself whether that supersedes, corrects or
     /// merely reinforces what is already known.
     pub fn remember(&self, a: &Assertion) -> Result<Outcome> {
+        // One transaction for the whole decision: a rejected or failed write must
+        // leave no trace, including no half-closed predecessor.
+        let tx = self.conn().unchecked_transaction()?;
+        let outcome = self.write(&tx, a, self.clock.now())?;
+        tx.commit()?;
+        Ok(outcome)
+    }
+
+    /// Records many claims as one write.
+    ///
+    /// Two properties, and both are the reason this exists rather than a loop
+    /// around [`Brain::remember`] in the caller.
+    ///
+    /// **One transaction.** A batch that fails writes nothing at all. The caller
+    /// of a batch is nearly always a machine -- a hook flushing what a session
+    /// learned, an importer replaying a file -- and a machine that half-wrote
+    /// cannot tell which half. Retrying an all-or-nothing batch is safe; retrying
+    /// a partial one is a guess.
+    ///
+    /// **One instant.** Every claim in the batch is recorded at the same `now`,
+    /// so two claims about the same subject and predicate with no `--at` between
+    /// them land on the same instant and the later one *corrects* the earlier.
+    /// Reading the clock per claim would instead close the first a microsecond
+    /// after opening it, and the history would be honest about nothing except how
+    /// fast the loop ran.
+    pub fn remember_all(&self, assertions: &[Assertion]) -> Result<Vec<Outcome>> {
+        let tx = self.conn().unchecked_transaction()?;
+        let now = self.clock.now();
+        let mut outcomes = Vec::with_capacity(assertions.len());
+        for a in assertions {
+            outcomes.push(self.write(&tx, a, now)?);
+        }
+        tx.commit()?;
+        Ok(outcomes)
+    }
+
+    /// One claim, inside a transaction somebody else owns and against an instant
+    /// somebody else read.
+    fn write(&self, tx: &Connection, a: &Assertion, now: Timestamp) -> Result<Outcome> {
         if let Some(c) = a.confidence
             && !(0.0..=1.0).contains(&c)
         {
@@ -311,15 +470,19 @@ impl Brain {
         let subject_key = require_key("subject", &a.subject)?;
         let predicate_key = require_key("predicate", &a.predicate)?;
 
-        // One transaction for the whole decision: a rejected or failed write must
-        // leave no trace, including no half-closed predecessor.
-        let tx = self.conn().unchecked_transaction()?;
-        let now = self.clock.now();
-        let valid_from = a.valid_from.unwrap_or(now);
+        // Rounded before anything is compared, and before anything is written.
+        // See [`stored`]: the clock reads finer than the store keeps, and an
+        // instant that survives the round trip differently from the one held in
+        // memory makes "the same moment" a question with two answers.
+        let now = stored(now);
+        let valid_from = stored(a.valid_from.unwrap_or(now));
+        let valid_to = a.valid_to.map(stored);
 
         // Rejected here rather than left to the schema's CHECK, so the caller is
         // told what is wrong with the claim instead of which constraint tripped.
-        if let Some(until) = a.valid_to
+        // An interval shorter than a microsecond lands here too, now that both
+        // ends have been rounded: it is empty in the only timeline that exists.
+        if let Some(until) = valid_to
             && until <= valid_from
         {
             return Err(BrainError::EmptyInterval {
@@ -328,14 +491,14 @@ impl Brain {
             });
         }
 
-        let entity_id = upsert_entity(&tx, &subject_key, &a.subject, now)?;
+        let entity_id = upsert_entity(tx, &subject_key, &a.subject, now)?;
         let shape = upsert_predicate(
-            &tx,
+            tx,
             &predicate_key,
             a.cardinality,
             matches!(&a.object, Object::Entity(_)),
         )?;
-        let object = resolve_object(&tx, &a.object, shape.relational, now)?;
+        let object = resolve_object(tx, &a.object, shape.relational, now)?;
         let cardinality = shape.cardinality;
 
         let w = Write {
@@ -344,6 +507,7 @@ impl Brain {
             predicate_key: &predicate_key,
             object: &object,
             valid_from,
+            valid_to,
             now,
         };
 
@@ -351,13 +515,12 @@ impl Brain {
             Cardinality::Multi => {
                 // Nothing supersedes anything here, so the only end this fact can
                 // have is the one it was given.
-                let id = self.insert_fact(&tx, &w, a.valid_to, false)?;
-                Outcome::Created(load_fact(&tx, id)?)
+                let id = self.insert_fact(tx, &w, valid_to, false)?;
+                Outcome::Created(load_fact(tx, id)?)
             }
-            Cardinality::Single => self.place_single(&tx, &w)?,
+            Cardinality::Single => self.place_single(tx, &w)?,
         };
 
-        tx.commit()?;
         Ok(outcome)
     }
 
@@ -391,7 +554,7 @@ impl Brain {
             // rewritten. It never pulls the end in, and it never moves the start:
             // shortening on reassert would let a heartbeat quietly kill the thing
             // it was keeping alive.
-            if let Some(until) = w.a.valid_to {
+            if let Some(until) = w.valid_to {
                 // Capped at whatever starts next, for the same reason a new fact
                 // is: an extension running past the following claim would make two
                 // facts true at once, which is the one thing this timeline exists
@@ -455,7 +618,7 @@ impl Brain {
         // The earlier of what the claim says about itself and where the next claim
         // begins. `--until` narrows and never widens: a fact cannot outlive the one
         // that follows it just because its author thought it would.
-        let end = match (w.a.valid_to, successor.as_ref().map(|s| s.valid_from)) {
+        let end = match (w.valid_to, successor.as_ref().map(|s| s.valid_from)) {
             (Some(until), Some(next)) => Some(until.min(next)),
             (until, None) => until,
             (None, next) => next,
@@ -791,6 +954,178 @@ impl Brain {
         })
     }
 
+    /// The properties this brain records, most-used first.
+    ///
+    /// Counted against what holds *now*, for the same reason `which` defaults to
+    /// now: a predicate whose every fact was superseded years ago is part of the
+    /// history, not part of what this brain is currently about.
+    ///
+    /// Ordered by weight rather than alphabetically. The first question anyone
+    /// has of an unfamiliar brain is what it is mostly made of, and an
+    /// alphabetical list answers that only by accident. The key breaks ties, so
+    /// two predicates of equal size never swap between runs.
+    pub fn predicates(&self) -> Result<Vec<PredicateInfo>> {
+        let now = micros(self.clock.now());
+        let mut stmt = self.conn().prepare(
+            "SELECT p.key, p.cardinality, p.relational,
+                    count(f.id), count(DISTINCT f.entity_id)
+             FROM predicate p
+             LEFT JOIN fact f ON f.predicate = p.key
+               AND f.retracted_at IS NULL
+               AND f.valid_from <= ?1 AND (f.valid_to IS NULL OR ?1 < f.valid_to)
+             GROUP BY p.key
+             ORDER BY count(f.id) DESC, p.key",
+        )?;
+        let rows = stmt.query_map([now], |r| {
+            Ok(PredicateInfo {
+                key: r.get(0)?,
+                cardinality: Cardinality::parse(&r.get::<_, String>(1)?)
+                    .unwrap_or(Cardinality::Single),
+                relational: r.get(2)?,
+                facts: r.get(3)?,
+                subjects: r.get(4)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// Every record whose text contains a string.
+    ///
+    /// Two stages, unioned, because they fail in opposite directions and neither
+    /// alone is "search the content":
+    ///
+    /// - **Term**, through `fact_fts`. Indexed, and forgiving in the ways the
+    ///   index already is -- `unicode61 remove_diacritics 2` folds accents and
+    ///   case, `porter` folds morphology, and a trailing `*` makes it a prefix,
+    ///   so `FEEDBACK` finds `FEEDBACK25-PRIDAYFARELYA`. What it cannot do is see
+    ///   inside a token: FTS5 indexes tokens, and nothing in it can find `PRIDAY`
+    ///   in the middle of one.
+    /// - **Fragment**, a folded `LIKE` scan. Exactly the case the index cannot
+    ///   serve, at the cost of reading every fact. That bound is real and stated
+    ///   rather than hidden: it is linear in the size of the brain, negligible at
+    ///   the hundreds-to-tens-of-thousands of facts one of these holds, and the
+    ///   upgrade path if it ever stops being negligible is a trigram index rather
+    ///   than a cleverer scan.
+    ///
+    /// Both scanned columns are read on purpose, though `search_text` is a
+    /// superset of `statement` today by construction. Making a search's
+    /// completeness depend on an invariant maintained in a different function is
+    /// how a promise like "every record that mentions this" quietly stops being
+    /// true, and the cost of not depending on it is one extra fold per row.
+    ///
+    /// Aliases are deliberately not searched. An alias is a name for a *thing*,
+    /// not text in a record, and `entity` and `alias` already answer that
+    /// question with the entity rather than with a list of its facts.
+    pub fn find(&self, q: &FindQuery) -> Result<FindAnswer> {
+        let conn = self.conn();
+        let needle = q.needle.trim();
+        // An empty needle matches nothing rather than everything. `LIKE '%%'` is
+        // true for every row, so the harmless-looking degenerate case is the one
+        // that returns the whole brain.
+        if needle.is_empty() {
+            return Ok(FindAnswer {
+                facts: Vec::new(),
+                matched: 0,
+                truncated: false,
+            });
+        }
+
+        // Each stage contributes a branch, and a stage with nothing to ask for
+        // contributes none. The term stage drops out for a needle FTS5 would
+        // tokenize to nothing -- `___`, `!!` -- where an empty MATCH expression
+        // is a query-syntax error rather than an empty result.
+        let mut stages: Vec<String> = Vec::new();
+        let mut binds: Vec<rusqlite::types::Value> = Vec::new();
+        if let Some(expr) = fts_prefix_query(needle) {
+            stages.push(
+                "SELECT fact_fts.rowid AS id, 1 AS term, 0 AS fragment
+                 FROM fact_fts WHERE fact_fts MATCH ?"
+                    .into(),
+            );
+            binds.push(expr.into());
+        }
+        // Aliased even though a `UNION ALL` takes its names from the first branch:
+        // when the term stage drops out this *is* the first branch, and the
+        // grouping above selects `term` and `fragment` by name.
+        stages.push(
+            "SELECT f.id AS id, 0 AS term, 1 AS fragment FROM fact f
+             WHERE fold(f.search_text) LIKE ? ESCAPE '\\'
+                OR fold(f.statement) LIKE ? ESCAPE '\\'"
+                .into(),
+        );
+        let pattern = like_pattern(needle);
+        binds.push(pattern.clone().into());
+        binds.push(pattern.into());
+
+        // `MAX` over a `UNION ALL`, not a bare `UNION`: a record both stages found
+        // is one record that two stages agree on, and it must appear once with
+        // both markers rather than twice.
+        let hits = format!(
+            "WITH hit(id, term, fragment) AS (
+               SELECT id, MAX(term), MAX(fragment) FROM ({}) GROUP BY id
+             )",
+            stages.join(" UNION ALL ")
+        );
+
+        // Applied outside the union so both stages are filtered by one definition
+        // of which facts count, and by the same one retrieval and traversal use.
+        let filter = TemporalFilter::for_when(q.when, self.clock.now(), q.scope.clone())
+            .excluding(q.not_scope.clone());
+
+        let mut count_binds = binds.clone();
+        let temporal_sql = filter.bind(&mut count_binds);
+        let matched: i64 = conn.query_row(
+            &format!(
+                "{hits} SELECT count(*) FROM fact f
+                 JOIN hit ON hit.id = f.id WHERE 1 = 1{temporal_sql}"
+            ),
+            rusqlite::params_from_iter(count_binds.iter()),
+            |r| r.get(0),
+        )?;
+
+        filter.bind(&mut binds);
+        binds.push((q.limit as i64).into());
+
+        // Subject, then time, then id. Grouping one thing's records together is
+        // what makes a page of evidence readable, and the id keeps runs identical.
+        //
+        // `SELECT_FACT` is wrapped rather than extended because it is a whole
+        // `SELECT ... FROM`, and the two markers have to land *after* its columns
+        // for `row_to_fact`'s indices to keep meaning what they say. The
+        // alternative -- writing the twenty-column list out a second time -- is
+        // the version that goes wrong silently when a column is added.
+        let mut stmt = conn.prepare(&format!(
+            "{hits}
+             SELECT s.*, hit.term, hit.fragment
+             FROM ({SELECT_FACT} WHERE 1 = 1{temporal_sql}) s
+             JOIN hit ON hit.id = s.id
+             ORDER BY s.key, s.valid_from, s.id
+             LIMIT ?"
+        ))?;
+        let mut facts = Vec::new();
+        for row in stmt.query_map(rusqlite::params_from_iter(binds), |r| {
+            let fact = row_to_fact(r)?;
+            // The two markers sit immediately after the fact's own columns.
+            let term: bool = r.get(20)?;
+            let fragment: bool = r.get(21)?;
+            Ok(fact.map(|fact| FindHit {
+                fact,
+                via: [(term, Via::Term), (fragment, Via::Fragment)]
+                    .into_iter()
+                    .filter_map(|(hit, v)| hit.then_some(v))
+                    .collect(),
+            }))
+        })? {
+            facts.push(row??);
+        }
+
+        Ok(FindAnswer {
+            truncated: matched > facts.len() as i64,
+            matched,
+            facts,
+        })
+    }
+
     /// What is known about one entity, and what it connects to.
     ///
     /// The neighbourhood is the part worth having: it is the brain's own answer
@@ -876,6 +1211,78 @@ fn micros(t: Timestamp) -> i64 {
 
 fn from_micros(v: i64) -> Timestamp {
     Timestamp::from_microsecond(v).unwrap_or(Timestamp::UNIX_EPOCH)
+}
+
+/// An instant as the store will keep it.
+///
+/// `fact.valid_from` is an integer count of microseconds and `Timestamp::now()`
+/// is not: on Linux it carries nanoseconds, on macOS it does not. So an instant
+/// held in memory and the same instant read back from the store were not equal,
+/// and every comparison the write path makes between the two -- *is this the
+/// same moment as the fact already there* -- answered differently depending on
+/// the platform.
+///
+/// What that cost: two claims about one subject and predicate at one instant are
+/// a correction, and the correction was only recognised where the clock happened
+/// to be coarse. Elsewhere the second claim was treated as a *change*, which
+/// closed the first one at its own start instant and produced an empty interval
+/// -- caught by the schema's `valid_from < valid_to`, so the write failed with a
+/// constraint violation rather than doing the wrong thing quietly. It surfaced
+/// through `remember --batch`, where every claim shares one instant by design and
+/// the collision is therefore certain rather than a coincidence of timing, but
+/// the bug was never about batches: two ordinary `remember` calls inside the same
+/// microsecond hit it too.
+///
+/// Rounding at the boundary rather than comparing loosely, because a tolerance
+/// would have to be agreed on by every comparison separately and one of them
+/// would eventually disagree. There is one timeline here, its resolution is a
+/// microsecond, and an instant that cannot be stored is not an instant this brain
+/// has an opinion about.
+fn stored(t: Timestamp) -> Timestamp {
+    from_micros(micros(t))
+}
+
+/// The needle as an FTS5 phrase-prefix expression, or `None` when FTS5 would see
+/// no tokens in it at all.
+///
+/// One quoted phrase rather than `OR`-ed terms, because a needle is a literal
+/// string: `find "context reset"` is asking for that phrase, and returning every
+/// fact mentioning either word would be a different, much less useful question.
+/// The trailing `*` makes the last token a prefix, which is what lets `FEEDBACK`
+/// reach `FEEDBACK25-PRIDAYFARELYA`.
+///
+/// Quoting is also what makes the needle safe. Unquoted, a stray `NEAR(`, `AND`
+/// or unbalanced quote is FTS5 syntax, and the user's search comes back as a
+/// query-syntax error they cannot act on.
+fn fts_prefix_query(needle: &str) -> Option<String> {
+    let tokens: Vec<&str> = needle
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|t| !t.is_empty())
+        .collect();
+    if tokens.is_empty() {
+        return None;
+    }
+    Some(format!("\"{}\"*", tokens.join(" ")))
+}
+
+/// The needle as a `LIKE` pattern matching it anywhere, folded the way
+/// [`norm::fold`] folds the column.
+///
+/// Escaping is not a nicety here. `_` is a single-character wildcard in `LIKE`,
+/// and identifiers are made of underscores -- unescaped, `_normalize_email`
+/// would match `xnormalizexemail` and every other near-miss, which is precisely
+/// wrong for the one search whose job is to be literal.
+fn like_pattern(needle: &str) -> String {
+    let mut out = String::with_capacity(needle.len() + 2);
+    out.push('%');
+    for c in norm::fold(needle).chars() {
+        if matches!(c, '%' | '_' | '\\') {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out.push('%');
+    out
 }
 
 fn require_key(what: &'static str, given: &str) -> Result<String> {

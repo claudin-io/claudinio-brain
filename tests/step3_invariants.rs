@@ -7,8 +7,8 @@
 //! These are cheap to write now and nearly impossible to retrofit once a brain
 //! holds real data.
 
-use brain::brain::{Assertion, Brain, Object};
-use brain::clock::StepClock;
+use brain::brain::{Assertion, Brain, Object, Outcome};
+use brain::clock::{FixedClock, StepClock};
 use brain::ids::SeededIdGen;
 use jiff::Timestamp;
 use proptest::prelude::*;
@@ -237,4 +237,73 @@ proptest! {
             );
         }
     }
+}
+
+/// The clock reads finer than the store keeps, and that used to decide what a
+/// second claim about the same instant *meant*.
+///
+/// `fact.valid_from` is an integer count of microseconds; `Timestamp::now()` on
+/// Linux carries nanoseconds and on macOS does not. So the same moment held in
+/// memory and read back from the store compared as two different moments, on one
+/// platform only: the correction was recognised where the clock happened to be
+/// coarse, and everywhere else the second claim was treated as a change, closing
+/// the first at its own start instant. The schema caught the empty interval, so
+/// this failed loudly rather than lying -- but it failed on a write that is
+/// correct.
+///
+/// Pinned with a clock that has nanoseconds in it, so the case is reproducible on
+/// every platform rather than on the unlucky ones.
+#[test]
+fn a_clock_finer_than_the_store_still_lands_on_one_instant() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let b = Brain::init(
+        &tmp.path().join("t.db"),
+        "precision",
+        Box::new(FixedClock::new(
+            "2026-07-01T00:00:00.123456789Z".parse().unwrap(),
+        )),
+        Box::new(SeededIdGen::new(1)),
+    )
+    .unwrap();
+
+    b.remember(&Assertion::new("port", "value", Object::num(8080.0)))
+        .unwrap();
+    let second = b
+        .remember(&Assertion::new("port", "value", Object::num(9090.0)))
+        .expect("a second claim at the same instant is a correction, not a failed write");
+    assert!(matches!(second, Outcome::Corrected { .. }), "{second:?}");
+
+    // And what the brain kept is what the store can hold: the instant read back
+    // is the instant it compares against.
+    let fact = b.current("port", "value").unwrap().unwrap();
+    assert_eq!(
+        fact.valid_from,
+        "2026-07-01T00:00:00.123456Z".parse::<Timestamp>().unwrap()
+    );
+}
+
+/// An interval shorter than the store's resolution is empty in the only timeline
+/// that exists, and is rejected as such rather than reaching the schema's CHECK.
+#[test]
+fn an_interval_shorter_than_a_microsecond_is_empty() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let b = Brain::init(
+        &tmp.path().join("t.db"),
+        "precision",
+        Box::new(StepClock::new(EPOCH.parse().unwrap(), 1000)),
+        Box::new(SeededIdGen::new(1)),
+    )
+    .unwrap();
+
+    let from: Timestamp = "2026-07-01T00:00:00.123456100Z".parse().unwrap();
+    let to: Timestamp = "2026-07-01T00:00:00.123456900Z".parse().unwrap();
+    let out = b.remember(
+        &Assertion::new("token", "valid", Object::text("yes"))
+            .at(from)
+            .until(to),
+    );
+    assert!(
+        matches!(out, Err(brain::brain::BrainError::EmptyInterval { .. })),
+        "{out:?}"
+    );
 }

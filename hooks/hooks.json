@@ -1,0 +1,43 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/brain-hook.sh",
+            "args": ["context"],
+            "timeout": 15,
+            "statusMessage": "Reading this project's brain"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/brain-hook.sh",
+            "args": ["recall"],
+            "timeout": 10,
+            "statusMessage": "Asking the brain"
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/brain-hook.sh",
+            "args": ["flush"],
+            "timeout": 10,
+            "statusMessage": "Asking for anything worth keeping"
+          }
+        ]
+      }
+    ]
+  }
+}

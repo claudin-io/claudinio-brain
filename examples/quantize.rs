@@ -37,10 +37,15 @@ fn main() -> anyhow::Result<()> {
         t.dtype()
     );
     let [rows, cols]: [usize; 2] = t.shape().try_into().unwrap();
+    // `as_chunks` rather than `chunks_exact(4)`: the length is a constant, so the
+    // array arrives already sized and there is no `try_into().unwrap()` standing
+    // in for a fact the compiler can see. Clippy started saying so in 1.98.
     let floats: Vec<f32> = t
         .data()
-        .chunks_exact(4)
-        .map(|b| f32::from_le_bytes(b.try_into().unwrap()))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|b| f32::from_le_bytes(*b))
         .collect();
     println!("input : {rows} x {cols} f32  ({} bytes)", raw.len());
 

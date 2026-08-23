@@ -199,68 +199,68 @@
   },
   "retrieval": {
     "alias": {
-      "cases": 22,
-      "recall@1": 0.705,
-      "recall@5": 0.727,
-      "recall@10": 0.727,
-      "mrr": 0.682,
-      "top1_accuracy": 0.727
+      "cases": 26,
+      "recall@1": 0.635,
+      "recall@5": 0.654,
+      "recall@10": 0.654,
+      "mrr": 0.615,
+      "top1_accuracy": 0.654
     },
     "all": {
-      "cases": 22,
-      "recall@1": 0.977,
-      "recall@5": 1.0,
+      "cases": 26,
+      "recall@1": 0.942,
+      "recall@5": 0.962,
       "recall@10": 1.0,
-      "mrr": 0.955,
-      "top1_accuracy": 1.0
+      "mrr": 0.929,
+      "top1_accuracy": 0.962
     },
     "bm25": {
-      "cases": 22,
-      "recall@1": 0.977,
+      "cases": 26,
+      "recall@1": 0.981,
       "recall@5": 1.0,
       "recall@10": 1.0,
-      "mrr": 0.955,
+      "mrr": 0.962,
       "top1_accuracy": 1.0
     },
     "bm25+alias": {
-      "cases": 22,
-      "recall@1": 0.977,
+      "cases": 26,
+      "recall@1": 0.981,
       "recall@5": 1.0,
       "recall@10": 1.0,
-      "mrr": 0.955,
+      "mrr": 0.962,
       "top1_accuracy": 1.0
     },
     "kin": {
-      "cases": 22,
-      "recall@1": 0.045,
-      "recall@5": 0.045,
-      "recall@10": 0.045,
+      "cases": 26,
+      "recall@1": 0.038,
+      "recall@5": 0.038,
+      "recall@10": 0.038,
       "mrr": 0.0,
-      "top1_accuracy": 0.045
+      "top1_accuracy": 0.038
     },
     "no-graph": {
-      "cases": 22,
-      "recall@1": 0.977,
+      "cases": 26,
+      "recall@1": 0.981,
       "recall@5": 1.0,
       "recall@10": 1.0,
-      "mrr": 0.955,
+      "mrr": 0.962,
       "top1_accuracy": 1.0
     },
     "no-kin": {
-      "cases": 22,
-      "recall@1": 0.977,
+      "cases": 26,
+      "recall@1": 0.981,
       "recall@5": 1.0,
       "recall@10": 1.0,
-      "mrr": 0.955,
+      "mrr": 0.962,
       "top1_accuracy": 1.0
     },
     "semantic": {
-      "cases": 22,
-      "recall@1": 0.977,
+      "cases": 26,
+      "recall@1": 0.942,
       "recall@5": 1.0,
       "recall@10": 1.0,
-      "mrr": 0.955,
-      "top1_accuracy": 1.0
+      "mrr": 0.942,
+      "top1_accuracy": 0.962
     }
   },
   "temporal": {

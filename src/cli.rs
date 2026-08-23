@@ -5,6 +5,7 @@
 
 use crate::brain::{Cardinality, Order};
 use crate::locate::{Ctx, Selection};
+use crate::recall::Channel;
 use clap::{Args, Parser, Subcommand};
 use jiff::Timestamp;
 use std::path::PathBuf;
@@ -78,8 +79,14 @@ pub enum Cmd {
     /// Search the brain with a natural-language question.
     Recall(RecallArgs),
 
+    /// List every record whose text contains a string.
+    Find(FindArgs),
+
     /// List which subjects hold a predicate, and what the value is.
     Which(WhichArgs),
+
+    /// List the properties this brain records, and how much it holds under each.
+    Predicates,
 
     /// Show the full trajectory of a subject/predicate pair.
     History(GetArgs),
@@ -103,6 +110,16 @@ pub enum Cmd {
     /// Rebuild the vector index from the stored embeddings.
     Reindex,
 
+    /// Answer a harness lifecycle hook, so the brain is read without anyone
+    /// having to remember to ask it.
+    ///
+    /// Reads the harness's JSON on stdin and writes the harness's JSON on
+    /// stdout. It never writes to the brain, never fails, and prints `{}` when
+    /// there is nothing to say -- including in every directory that has no
+    /// brain. `BRAIN_HOOK=off` in the environment turns it off without
+    /// uninstalling anything.
+    Hook(HookArgs),
+
     /// Speak MCP over stdio, so an agent can use this brain as a tool.
     #[cfg(feature = "mcp")]
     Serve,
@@ -125,10 +142,31 @@ pub enum Cmd {
 
 #[derive(Args, Debug)]
 pub struct RememberArgs {
-    #[arg(long)]
-    pub subject: String,
-    #[arg(long)]
-    pub predicate: String,
+    /// Read many facts from a file of JSON objects, one per line, or from `-`
+    /// for stdin. A top-level JSON array is accepted too, because that is what
+    /// anything generating the file will produce first.
+    ///
+    /// Every key is one of the flags below: `subject`, `predicate`, `value` or
+    /// `entity`, `unit`, `at`, `until`, `source`, `locator`, `confidence`,
+    /// `scope`, `cardinality`. An unknown key is an error naming the line, not a
+    /// field quietly dropped -- a batch is written by a machine, and a machine
+    /// does not notice that its typo went nowhere.
+    ///
+    /// The whole batch is one write: if any line is bad, nothing is recorded.
+    #[arg(
+        long,
+        value_name = "PATH",
+        conflicts_with_all = [
+            "subject", "predicate", "value", "entity", "unit", "at", "until",
+            "source", "locator", "confidence", "scope", "cardinality",
+        ],
+    )]
+    pub batch: Option<PathBuf>,
+
+    #[arg(long, required_unless_present = "batch")]
+    pub subject: Option<String>,
+    #[arg(long, required_unless_present = "batch")]
+    pub predicate: Option<String>,
 
     /// A literal value. Parsed as a number when it looks like one, else as text.
     #[arg(long, conflicts_with = "entity")]
@@ -167,6 +205,15 @@ pub struct RememberArgs {
 
     #[arg(long, value_parser = parse_cardinality)]
     pub cardinality: Option<Cardinality>,
+}
+
+#[derive(Args, Debug)]
+pub struct HookArgs {
+    /// `context` introduces the brain (attach to SessionStart), `recall`
+    /// answers the prompt just typed (UserPromptSubmit), `flush` asks for what
+    /// the session learned before it is lost (PreCompact, SessionEnd).
+    #[arg(value_enum)]
+    pub what: crate::hook::What,
 }
 
 #[derive(Args, Debug)]
@@ -241,6 +288,55 @@ pub struct RecallArgs {
     /// replayed.
     #[arg(long)]
     pub learn: bool,
+
+    /// Which retrievers may answer, comma-separated: `bm25`, `alias`,
+    /// `semantic`, `graph`, `kin`. All of them by default.
+    ///
+    /// Narrowing this is how a surprising ranking gets explained -- `--channels
+    /// bm25` is the answer with no guessing in it at all.
+    #[arg(long, value_delimiter = ',', value_parser = parse_channel)]
+    pub channels: Option<Vec<Channel>>,
+
+    /// Show the arithmetic: which channel voted at which rank, what the votes
+    /// summed to, and which re-ranking rule multiplied the result.
+    ///
+    /// `--channels` answers *what found this*. It cannot answer *why this
+    /// outranks that*, because the contest is settled between the channels and
+    /// after them -- and re-running the question with a channel switched off is
+    /// a bisection, not an explanation.
+    #[arg(long)]
+    pub explain: bool,
+}
+
+/// A literal-string search, filtered exactly the way `which` is.
+///
+/// No ranking flags, deliberately. This answers *which records mention this*,
+/// and a ranked answer to that is a worse answer -- the caller is gathering
+/// evidence, not asking a question.
+#[derive(Args, Debug)]
+pub struct FindArgs {
+    /// The text to look for, taken literally. A phrase stays a phrase.
+    pub needle: String,
+
+    /// Search what held at this instant instead of what holds now.
+    #[arg(long, value_name = "WHEN", conflicts_with = "history")]
+    pub as_of: Option<String>,
+
+    /// Include closed intervals, i.e. records that used to hold.
+    #[arg(long)]
+    pub history: bool,
+
+    /// High for the same reason `which`'s is: the answer always reports how many
+    /// matched, so a cut is visible rather than assumed.
+    #[arg(long, default_value_t = 200)]
+    pub limit: usize,
+
+    #[arg(long)]
+    pub scope: Option<String>,
+
+    /// Keep a namespace out of the answer.
+    #[arg(long = "not-scope", value_name = "SCOPE")]
+    pub not_scope: Option<String>,
 }
 
 /// A set question, filtered the same way the fact was written.
@@ -356,6 +452,11 @@ fn parse_cardinality(s: &str) -> Result<Cardinality, String> {
 
 fn parse_order(s: &str) -> Result<Order, String> {
     Order::parse(s).ok_or_else(|| format!("expected `subject`, `value` or `since`, got {s:?}"))
+}
+
+fn parse_channel(s: &str) -> Result<Channel, String> {
+    Channel::parse(s)
+        .ok_or_else(|| format!("expected `bm25`, `alias`, `semantic`, `graph` or `kin`, got {s:?}"))
 }
 
 /// Accepts a bare date as well as a full RFC 3339 instant, because `--at

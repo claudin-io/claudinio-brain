@@ -9,12 +9,14 @@
 #![deny(clippy::print_stdout, clippy::dbg_macro)]
 
 pub mod alias;
+pub mod batch;
 pub mod brain;
 pub mod cli;
 pub mod clock;
 pub mod config;
 pub mod embed;
 pub mod graph;
+pub mod hook;
 pub mod ids;
 pub mod index;
 pub mod kin;
