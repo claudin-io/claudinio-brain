@@ -174,6 +174,13 @@ pub struct RememberParams {
     /// Optional namespace, to keep unrelated sets of facts apart.
     #[serde(default)]
     pub scope: Option<String>,
+    /// Report what this would do and write nothing. Use it when the interesting
+    /// part is *which* of the four outcomes you are about to cause -- adding a
+    /// claim and ending one somebody still believes look identical from here
+    /// until the timeline is consulted. The answer is the real write, rolled
+    /// back, so it does not approximate.
+    #[serde(default)]
+    pub dry_run: bool,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -307,6 +314,11 @@ pub struct LinkParams {
     /// When the relation started holding. Defaults to now.
     #[serde(default)]
     pub at: Option<String>,
+    /// Report what this would do and write nothing. A relation has a timeline
+    /// like any other fact, so linking something that is already linked
+    /// elsewhere ends the old edge -- which is worth seeing before it happens.
+    #[serde(default)]
+    pub dry_run: bool,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -359,8 +371,14 @@ pub struct AliasParams {
 #[derive(serde::Serialize, schemars::JsonSchema)]
 pub struct WriteResult {
     /// What the write did: `created`, `superseded` (it changed), `corrected`
-    /// (the old claim was never true) or `reasserted` (already known).
+    /// (the old claim was never true) or `reasserted` (already known). When
+    /// `dry_run` is true this is what it *would* do; nothing was recorded.
     pub outcome: String,
+    /// True when nothing was written. Read it before reporting the write as done:
+    /// every other field here reads the same either way, which is the point of a
+    /// rehearsal and also how one gets mistaken for a write.
+    #[serde(default)]
+    pub dry_run: bool,
     /// The fact as stored, including the `id` other tools take.
     pub fact: serde_json::Value,
     /// Set when the write succeeded but probably did not mean what you wanted:
@@ -506,8 +524,15 @@ impl BrainServer {
         // landed: the write is not in doubt, and a warning that could change the
         // outcome would make this a validator rather than a memory.
         let text_valued = p.entity.is_none();
+        let dry_run = p.dry_run;
         let (outcome, hint) = self.with(|b| {
-            let outcome = b.remember(&a)?;
+            let outcome = match dry_run {
+                true => b
+                    .rehearse(std::slice::from_ref(&a))?
+                    .pop()
+                    .expect("one assertion in, one outcome out"),
+                false => b.remember(&a)?,
+            };
             let hint = if text_valued {
                 crate::lint::missed_relation(b.store().conn(), &crate::norm::key(&p.predicate))?
             } else {
@@ -518,6 +543,7 @@ impl BrainServer {
 
         Ok(Json(WriteResult {
             outcome: outcome.kind().to_string(),
+            dry_run,
             fact: json!(outcome.fact()),
             hint,
         }))
@@ -533,9 +559,17 @@ impl BrainServer {
     #[tool(name = "link")]
     fn link(&self, Parameters(p): Parameters<LinkParams>) -> Result<Json<WriteResult>, ErrorData> {
         let at = parse_at(p.at.as_ref())?;
-        let outcome = self.with(|b| b.link(&p.from, &p.rel, &p.to, at))?;
+        let a = Brain::link_assertion(&p.from, &p.rel, &p.to, at);
+        let outcome = self.with(|b| match p.dry_run {
+            true => Ok(b
+                .rehearse(std::slice::from_ref(&a))?
+                .pop()
+                .expect("one assertion in, one outcome out")),
+            false => b.link(&p.from, &p.rel, &p.to, at),
+        })?;
         Ok(Json(WriteResult {
             outcome: outcome.kind().to_string(),
+            dry_run: p.dry_run,
             fact: json!(outcome.fact()),
             // `link` is always a relation, so the mistake this warns about cannot
             // be made here.

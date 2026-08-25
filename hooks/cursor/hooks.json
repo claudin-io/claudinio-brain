@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "hooks": {
+    "sessionStart": [
+      {
+        "command": "/ABSOLUTE/PATH/TO/claudinio-brain/hooks/brain-hook.sh context cursor"
+      }
+    ]
+  }
+}

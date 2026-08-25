@@ -124,8 +124,7 @@ pub enum Cmd {
     #[cfg(feature = "mcp")]
     Serve,
 
-    /// Write the brain to a single self-contained HTML file.
-    #[cfg(feature = "studio")]
+    /// Write the brain out as a file: Markdown to review, HTML to look at.
     Export(ExportArgs),
 
     /// Open the brain in a 3D viewer and editor, served from localhost.
@@ -205,6 +204,20 @@ pub struct RememberArgs {
 
     #[arg(long, value_parser = parse_cardinality)]
     pub cardinality: Option<Cardinality>,
+
+    /// Report what this write would do, and do not do it.
+    ///
+    /// The useful part of a write here is never whether it worked -- it is which
+    /// of four things it was: `created`, `reasserted`, `superseded`, `corrected`.
+    /// Only the timeline knows which, and a caller writing what a session learned
+    /// cannot know it in advance. Ending a claim somebody still believes and
+    /// adding a new one are the same exit code and very different events.
+    ///
+    /// The rehearsal runs the real write inside a transaction it rolls back, so
+    /// what it reports is what would happen and not an approximation of it.
+    /// Nothing is recorded, and the fact ids in the output name nothing.
+    #[arg(long)]
+    pub dry_run: bool,
 }
 
 #[derive(Args, Debug)]
@@ -214,6 +227,30 @@ pub struct HookArgs {
     /// the session learned before it is lost (PreCompact, SessionEnd).
     #[arg(value_enum)]
     pub what: crate::hook::What,
+
+    /// Which harness is going to read this.
+    ///
+    /// `claude` is the default and is also correct for Codex and Gemini CLI --
+    /// all three read `hookSpecificOutput.additionalContext`. `cursor` emits the
+    /// flat `additional_context` its `sessionStart` hook expects. `text` writes
+    /// the context and nothing else, for a harness whose schema is not published
+    /// or not verified here.
+    ///
+    /// The rules that make a hook safe to install do not change with the
+    /// envelope: nothing is written, nothing fails, and having nothing to say
+    /// stays distinguishable from saying nothing.
+    #[arg(long, value_enum, default_value_t = crate::hook::Format::Claude)]
+    pub format: crate::hook::Format,
+
+    /// The prompt to answer, instead of reading it from stdin.
+    ///
+    /// For a caller that is not a command hook. A plugin running inside another
+    /// program's runtime has to plumb stdin through whatever shell API that
+    /// runtime provides, and getting that subtly wrong produces a hook that
+    /// returns nothing rather than one that fails -- the quiet failure this whole
+    /// interface is built to avoid. An argument has no such API to get wrong.
+    #[arg(long, value_name = "TEXT")]
+    pub prompt: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -413,16 +450,27 @@ pub struct EntityArgs {
 }
 
 #[derive(Args, Debug)]
-#[cfg(feature = "studio")]
 pub struct ExportArgs {
-    /// Where to write it. Defaults to `brain-studio.html` in the working
-    /// directory.
+    /// Where to write it. Defaults to `brain-studio.html`, or `brain.md` under
+    /// `--markdown`.
     #[arg(long, short, value_name = "PATH")]
     pub out: Option<PathBuf>,
 
     /// Write to stdout instead of a file.
     #[arg(long, conflicts_with = "out")]
     pub stdout: bool,
+
+    /// Write Markdown instead of the HTML page.
+    ///
+    /// A brain in a repository is a file nobody can read a change to. This is the
+    /// same contents as text: greppable, and diffable in a pull request the way
+    /// the code around it is. The output is deterministic -- no export time, no
+    /// ids -- so an unchanged brain exports byte-identically and a diff means
+    /// something actually changed.
+    ///
+    /// It is a view, not a second copy. Nothing reads it back in.
+    #[arg(long)]
+    pub markdown: bool,
 }
 
 #[derive(Args, Debug)]

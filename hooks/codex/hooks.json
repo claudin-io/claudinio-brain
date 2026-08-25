@@ -1,0 +1,29 @@
+{
+  "description": "claudinio-brain: read the project's brain on every prompt, without being asked.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/ABSOLUTE/PATH/TO/claudinio-brain/hooks/brain-hook.sh context",
+            "timeout": 15,
+            "statusMessage": "Reading this project's brain"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/ABSOLUTE/PATH/TO/claudinio-brain/hooks/brain-hook.sh recall",
+            "timeout": 10,
+            "statusMessage": "Asking the brain"
+          }
+        ]
+      }
+    ]
+  }
+}

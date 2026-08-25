@@ -459,6 +459,43 @@ impl Brain {
         Ok(outcomes)
     }
 
+    /// What [`Self::remember_all`] would do, without doing it.
+    ///
+    /// The reason this exists is the reason a batch exists at all: it is written
+    /// by a machine, and the interesting part of a write is never "did it
+    /// succeed". It is *which* of the four things it did. `created` and
+    /// `superseded` are the same exit code and completely different events -- one
+    /// added a claim, the other ended one that a person may still believe. An
+    /// agent flushing a session has no way to know in advance which it is about to
+    /// cause, because that depends on what the timeline already holds.
+    ///
+    /// So this reports the outcomes and then throws the write away. It is the same
+    /// transaction, running the same [`Self::write`] against the same clock, and
+    /// that is the whole design: a rehearsal that took a shortcut -- checked the
+    /// obvious cases, guessed the rest -- would be a rehearsal that disagrees with
+    /// the performance exactly where somebody needed it not to. The only
+    /// difference between the two functions is the last line.
+    ///
+    /// Rolling back is enough to leave nothing behind because every write this
+    /// makes, including the derived vector index, goes through `tx`. Nothing here
+    /// touches the filesystem or a clock that advances.
+    ///
+    /// Two caveats worth stating rather than discovering. The ids on the returned
+    /// facts are the ids the rollback just released, so they name nothing and must
+    /// not be stored. And a rehearsal is a claim about the brain as it is now: run
+    /// it, let somebody else write, and the answer is stale in the ordinary way
+    /// that reading before writing always is.
+    pub fn rehearse(&self, assertions: &[Assertion]) -> Result<Vec<Outcome>> {
+        let tx = self.conn().unchecked_transaction()?;
+        let now = self.clock.now();
+        let mut outcomes = Vec::with_capacity(assertions.len());
+        for a in assertions {
+            outcomes.push(self.write(&tx, a, now)?);
+        }
+        tx.rollback()?;
+        Ok(outcomes)
+    }
+
     /// One claim, inside a transaction somebody else owns and against an instant
     /// somebody else read.
     fn write(&self, tx: &Connection, a: &Assertion, now: Timestamp) -> Result<Outcome> {
@@ -729,9 +766,19 @@ impl Brain {
     /// Records a relation. Relations are facts, so this is `remember` with an
     /// entity-valued object -- and therefore gets bitemporality for free.
     pub fn link(&self, from: &str, rel: &str, to: &str, at: Option<Timestamp>) -> Result<Outcome> {
+        self.remember(&Self::link_assertion(from, rel, to, at))
+    }
+
+    /// The claim [`Self::link`] makes, without making it.
+    ///
+    /// Extracted so that rehearsing a link and performing one cannot drift apart.
+    /// They were three identical lines in two files, which is fine until the day
+    /// one of them grows a fourth -- and the failure that produces is a `--dry-run`
+    /// that is quietly wrong about the only thing anybody asked it.
+    pub fn link_assertion(from: &str, rel: &str, to: &str, at: Option<Timestamp>) -> Assertion {
         let mut a = Assertion::new(from, rel, Object::entity(to));
         a.valid_from = at;
-        self.remember(&a)
+        a
     }
 
     /// Marks a fact as never having been true.
