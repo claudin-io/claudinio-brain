@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/ABSOLUTE/PATH/TO/claudinio-brain/hooks/brain-hook.sh context",
+            "timeout": 15
+          }
+        ]
+      }
+    ]
+  }
+}

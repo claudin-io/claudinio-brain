@@ -252,6 +252,22 @@ impl Outcome {
             Self::Corrected { .. } => "corrected",
         }
     }
+
+    /// The same four outcomes, named for something that has not happened.
+    ///
+    /// [`Self::kind`] is a report and is past tense, which is right everywhere it
+    /// is used and wrong the moment a rehearsal borrows it: "would superseded" is
+    /// the kind of sentence that tells a reader the tool is stitching strings
+    /// rather than saying something. The pairing lives here, next to the variants,
+    /// so a fifth outcome cannot be added with only half its vocabulary.
+    pub fn would(&self) -> &'static str {
+        match self {
+            Self::Created(_) => "create",
+            Self::Reasserted(_) => "reassert",
+            Self::Superseded { .. } => "supersede",
+            Self::Corrected { .. } => "correct",
+        }
+    }
 }
 
 /// Where a fact came from and what became of it.

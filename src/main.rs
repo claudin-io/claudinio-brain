@@ -65,7 +65,6 @@ fn run(cli: Cli) -> anyhow::Result<std::process::ExitCode> {
         Cmd::Hook(args) => cmd_hook(args, &cli, &ctx),
         #[cfg(feature = "mcp")]
         Cmd::Serve => cmd_serve(&cli, &ctx),
-        #[cfg(feature = "studio")]
         Cmd::Export(args) => cmd_export(args, &cli, &ctx),
         #[cfg(feature = "studio")]
         Cmd::Studio(args) => cmd_studio(args, &cli, &ctx),
@@ -101,7 +100,7 @@ fn answer(b: &Brain, mut body: serde_json::Value) -> serde_json::Value {
 
 fn cmd_remember(args: &RememberArgs, cli: &Cli, ctx: &Ctx) -> anyhow::Result<()> {
     if let Some(path) = &args.batch {
-        return cmd_remember_batch(path, cli, ctx);
+        return cmd_remember_batch(path, args.dry_run, cli, ctx);
     }
     // clap enforces this, but it enforces it about flags; the code that has to
     // read them should say what it needs rather than unwrap and hope.
@@ -139,7 +138,16 @@ fn cmd_remember(args: &RememberArgs, cli: &Cli, ctx: &Ctx) -> anyhow::Result<()>
     a.cardinality = args.cardinality;
 
     let b = open(cli, ctx)?;
-    let outcome = b.remember(&a)?;
+    let outcome = match args.dry_run {
+        // A slice of one rather than a second rehearsal entry point. One claim is
+        // a batch of one, and the two paths agreeing is worth more than the
+        // signature reading nicely.
+        true => b
+            .rehearse(std::slice::from_ref(&a))?
+            .pop()
+            .expect("one assertion in, one outcome out"),
+        false => b.remember(&a)?,
+    };
 
     // Looked up after the write, and only for a literal: the write is not in
     // doubt. This is the warning that never came the 59 times a relation was
@@ -155,12 +163,20 @@ fn cmd_remember(args: &RememberArgs, cli: &Cli, ctx: &Ctx) -> anyhow::Result<()>
             &b,
             serde_json::json!({
                 "outcome": outcome.kind(),
+                "dry_run": args.dry_run,
                 "fact": outcome.fact(),
                 "hint": hint,
             }),
         ))?);
     } else {
-        emit(&format!("{}: {}", outcome.kind(), outcome.fact().statement));
+        emit(&match args.dry_run {
+            true => format!(
+                "would {}: {} (nothing written)",
+                outcome.would(),
+                outcome.fact().statement
+            ),
+            false => format!("{}: {}", outcome.kind(), outcome.fact().statement),
+        });
         if let Some(h) = &hint {
             emit(&format!("warning: {h}"));
         }
@@ -176,7 +192,12 @@ fn cmd_remember(args: &RememberArgs, cli: &Cli, ctx: &Ctx) -> anyhow::Result<()>
 /// session learned, with nobody watching. A partial batch would leave that caller
 /// unable to say what it had already recorded, and its only recovery would be to
 /// write everything again and hope reassertion covered the difference.
-fn cmd_remember_batch(path: &std::path::Path, cli: &Cli, ctx: &Ctx) -> anyhow::Result<()> {
+fn cmd_remember_batch(
+    path: &std::path::Path,
+    dry_run: bool,
+    cli: &Cli,
+    ctx: &Ctx,
+) -> anyhow::Result<()> {
     let text = if path == std::path::Path::new("-") {
         std::io::read_to_string(std::io::stdin().lock())?
     } else {
@@ -189,7 +210,10 @@ fn cmd_remember_batch(path: &std::path::Path, cli: &Cli, ctx: &Ctx) -> anyhow::R
     // An empty batch is not an error. A hook that learned nothing this session
     // still runs, and a command that fails when there was nothing to do is a
     // command every caller has to special-case.
-    let outcomes = b.remember_all(&assertions)?;
+    let outcomes = match dry_run {
+        true => b.rehearse(&assertions)?,
+        false => b.remember_all(&assertions)?,
+    };
 
     // One hint per predicate rather than one per fact: a batch importing forty
     // owners stored as strings has one problem, not forty.
@@ -220,16 +244,34 @@ fn cmd_remember_batch(path: &std::path::Path, cli: &Cli, ctx: &Ctx) -> anyhow::R
             .collect();
         emit(&serde_json::to_string_pretty(&answer(
             &b,
-            serde_json::json!({ "wrote": outcomes.len(), "counts": counts, "facts": facts, "hints": hints }),
+            serde_json::json!({
+                // Named for what happened rather than for the flag: a caller
+                // reading `wrote` has to be told when the number is hypothetical,
+                // and a field that means two things depending on another field is
+                // a field somebody will read wrong.
+                "wrote": match dry_run { true => 0, false => outcomes.len() },
+                "would_write": outcomes.len(),
+                "dry_run": dry_run,
+                "counts": counts,
+                "facts": facts,
+                "hints": hints,
+            }),
         ))?);
     } else {
         for o in &outcomes {
-            emit(&format!("{}: {}", o.kind(), o.fact().statement));
+            emit(&match dry_run {
+                true => format!("would {}: {}", o.would(), o.fact().statement),
+                false => format!("{}: {}", o.kind(), o.fact().statement),
+            });
         }
         let tally: Vec<String> = counts.iter().map(|(k, n)| format!("{n} {k}")).collect();
-        emit(&match outcomes.len() {
-            0 => "nothing to record".to_string(),
-            n => format!("{n} facts: {}", tally.join(", ")),
+        emit(&match (outcomes.len(), dry_run) {
+            (0, _) => "nothing to record".to_string(),
+            (n, false) => format!("{n} facts: {}", tally.join(", ")),
+            (n, true) => format!(
+                "would record {n} facts: {} (nothing written)",
+                tally.join(", ")
+            ),
         });
         for h in &hints {
             emit(&format!("warning: {h}"));
@@ -254,14 +296,27 @@ fn cmd_hook(args: &brain::cli::HookArgs, cli: &Cli, ctx: &Ctx) -> anyhow::Result
         return Ok(());
     }
 
-    let input = hook_input();
+    // An explicit `--prompt` outranks stdin: a caller that passed one is a caller
+    // that has already decided what the question is.
+    let input = match &args.prompt {
+        Some(p) => serde_json::json!({ "prompt": p }),
+        None => hook_input(),
+    };
     let b = open(cli, ctx).ok();
     // A brain holding a task list holds facts that are true, current and beside
     // the point on every prompt that is not about them. `--not-scope` is the
     // existing answer to that; a hook takes no flags, so it reads it from here.
     let not_scope = std::env::var("BRAIN_HOOK_NOT_SCOPE").ok();
-    let out = brain::hook::payload(args.what, b.as_ref(), &input, not_scope.as_deref());
-    emit(&out.to_string());
+    // `None` is silence, not an empty line -- see `hook::respond`.
+    if let Some(out) = brain::hook::respond(
+        args.what,
+        b.as_ref(),
+        &input,
+        not_scope.as_deref(),
+        args.format,
+    ) {
+        emit(&out);
+    }
     Ok(())
 }
 
@@ -275,10 +330,25 @@ fn hook_input() -> serde_json::Value {
     if std::io::stdin().is_terminal() {
         return serde_json::Value::Null;
     }
-    std::io::read_to_string(std::io::stdin().lock())
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or(serde_json::Value::Null)
+    let Ok(raw) = std::io::read_to_string(std::io::stdin().lock()) else {
+        return serde_json::Value::Null;
+    };
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) {
+        return v;
+    }
+    // Not JSON, so this is a harness that hands over the prompt as text. Read it
+    // as the prompt rather than as nothing.
+    //
+    // The alternative was silence, and silence is the worst answer available here:
+    // a hook never fails and never explains, so a harness whose input shape was
+    // not understood would install cleanly, run on every prompt, and do nothing --
+    // indistinguishable from a brain that had nothing to say. Guessing at *which*
+    // harness this is would be overreach; noticing that somebody sent a prompt is
+    // not.
+    match raw.trim() {
+        "" => serde_json::Value::Null,
+        text => serde_json::json!({ "prompt": text }),
+    }
 }
 
 fn cmd_link(args: &LinkArgs, cli: &Cli, ctx: &Ctx) -> anyhow::Result<()> {
@@ -596,13 +666,53 @@ fn cmd_serve(cli: &Cli, ctx: &Ctx) -> anyhow::Result<()> {
     brain::mcp::serve(b)
 }
 
-/// Writes the brain as one HTML file.
+/// Writes the brain out as one file.
 ///
-/// A photograph, explicitly: the page carries `live: false`, so it renders the
-/// graph and the whole timeline but shows no editor. Nothing in it can drift out
-/// of date silently, because nothing in it claims to be current.
-#[cfg(feature = "studio")]
+/// Two renderings of the same contents, for two different readers. The HTML page
+/// is a photograph -- it carries `live: false`, so it draws the graph and the
+/// whole timeline but shows no editor, and nothing in it can drift out of date
+/// silently because nothing in it claims to be current. The Markdown is for the
+/// reader the page cannot serve: whoever has to review a *change* to the brain,
+/// in a diff, next to the code it describes. See [`brain::md`].
 fn cmd_export(args: &brain::cli::ExportArgs, cli: &Cli, ctx: &Ctx) -> anyhow::Result<()> {
+    if args.markdown {
+        return cmd_export_markdown(args, cli, ctx);
+    }
+    #[cfg(not(feature = "studio"))]
+    anyhow::bail!("this build has no studio; pass --markdown");
+    #[cfg(feature = "studio")]
+    cmd_export_html(args, cli, ctx)
+}
+
+/// The brain as text, for a pull request.
+fn cmd_export_markdown(args: &brain::cli::ExportArgs, cli: &Cli, ctx: &Ctx) -> anyhow::Result<()> {
+    let b = open(cli, ctx)?;
+    let text = brain::md::render(b.store().conn(), b.store().label())?;
+
+    if args.stdout {
+        emit(&text);
+        return Ok(());
+    }
+    let out = args.out.clone().unwrap_or_else(|| ctx.cwd.join("brain.md"));
+    std::fs::write(&out, &text)?;
+
+    if cli.json {
+        emit(&serde_json::to_string_pretty(&answer(
+            &b,
+            serde_json::json!({ "exported": out, "bytes": text.len(), "format": "markdown" }),
+        ))?);
+    } else {
+        emit(&format!(
+            "exported to {} ({} lines)",
+            out.display(),
+            text.lines().count()
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(feature = "studio")]
+fn cmd_export_html(args: &brain::cli::ExportArgs, cli: &Cli, ctx: &Ctx) -> anyhow::Result<()> {
     let b = open(cli, ctx)?;
     let snap = brain::studio::Snapshot::capture(&b, false)?;
     let html = brain::studio::render_page(&snap)?;

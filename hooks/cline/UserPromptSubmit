@@ -1,0 +1,12 @@
+#!/bin/sh
+# claudinio-brain -- Cline UserPromptSubmit hook.
+#
+# Cline finds hooks by filename, so this file must keep this exact name and stay
+# executable. Install by copying this directory's contents *and* hooks/brain-hook.sh
+# into .clinerules/hooks/ (this workspace) or ~/Documents/Cline/Hooks/ (all of
+# them), then enable hooks in Cline's Feature Settings.
+#
+# brain-hook.sh is resolved next to this file, which is why it has to travel with
+# it. It is what makes a missing binary silent rather than an error on every
+# prompt.
+exec "$(dirname "$0")/brain-hook.sh" recall cline

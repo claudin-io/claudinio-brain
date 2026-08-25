@@ -194,6 +194,39 @@ pub enum Rule {
     /// See [`RARE_TERM_MISS_DEMOTION`]: the question named a term the brain
     /// barely uses, and this fact does not contain it.
     RareTermMiss,
+    /// Recorded certainty is a ranking signal, and the factor is the number itself.
+    ///
+    /// There is no constant on this rule, which is why it has no name and no sweep
+    /// table. `--confidence 0.5` already says what the writer thinks the claim is
+    /// worth; inventing a second number to translate that into a ranking penalty
+    /// would only add somewhere for a disagreement to hide. A claim recorded as half
+    /// certain counts half.
+    ///
+    /// This closes a gap rather than adding a preference. `confidence` has always
+    /// been stored, validated on write, and reinforced every time a fact is
+    /// reasserted -- and until now nothing on the read path ever looked at it. A
+    /// brain could hold "we *think* the timeout is 30" next to a measured value and
+    /// rank them identically, which makes the flag decoration.
+    ///
+    /// Three things follow, all of them deliberate:
+    ///
+    /// - **It is inert on every brain that does not use the flag.** Facts are born at
+    ///   1.0, so the factor is 1.0, so nothing moves. That is a stronger guarantee
+    ///   than a swept constant can give: the existing suites cannot regress on this
+    ///   rule, because for their fixtures it does not exist.
+    /// - **It is the only factor here the question has no say in.** The other three
+    ///   ask *what did the caller point at*; this one is a property of the record.
+    ///   Applied last, so a fact demoted for being off-topic is not also rescued by
+    ///   having been certain about it.
+    /// - **It still cannot delete anything.** Like the rules above it, this multiplies
+    ///   rather than filters. A fact recorded at 0.2 is a fact somebody chose to
+    ///   write down, and a question with no better answer should still get it.
+    ///
+    /// Reassertion is what makes the signal earn its way up rather than only down:
+    /// being told the same thing again moves confidence halfway to 1.0, so a hedge
+    /// that keeps being confirmed stops being ranked as a hedge without anyone
+    /// editing it.
+    Uncertain,
 }
 
 impl Rule {
@@ -205,6 +238,7 @@ impl Rule {
             Self::OffTopic => "off-topic",
             Self::UnaskedPredicate => "unasked-predicate",
             Self::RareTermMiss => "rare-term-miss",
+            Self::Uncertain => "uncertain",
         }
     }
 }
@@ -678,6 +712,8 @@ struct Shape {
     entity: i64,
     object: Option<i64>,
     predicate: String,
+    /// What the writer said this claim is worth, 0..=1. See [`Rule::Uncertain`].
+    confidence: f64,
 }
 
 /// What one graph expansion produced, and everything the re-rank needs to know
@@ -783,7 +819,14 @@ impl Brain {
             true => None,
             false => rare_term_hits(conn, text)?,
         };
-        if fused.is_empty() || (asked.is_empty() && !focus.from_question && rare.is_none()) {
+        // Only the genuinely empty case short-circuits now. The three rules above
+        // are all inert unless the question said something specific, but
+        // [`Rule::Uncertain`] is not about the question at all, so a candidate set
+        // has to be looked at even when nothing else would look at it. What that
+        // costs is one indexed `IN` query on a set already bounded by
+        // [`CHANNEL_DEPTH`] -- next to five channels and a vector index, it does
+        // not register.
+        if fused.is_empty() {
             return Ok(());
         }
 
@@ -806,6 +849,14 @@ impl Brain {
             if rare.as_ref().is_some_and(|hits| !hits.contains(id)) {
                 *score *= RARE_TERM_MISS_DEMOTION;
                 trace.demote(*id, Rule::RareTermMiss, RARE_TERM_MISS_DEMOTION);
+            }
+            // Recorded certainty, applied last because it is the only factor here
+            // that the question has no say in. Nothing fires at 1.0: that is the
+            // default every fact is born with, so the common brain sees no rule at
+            // all and `fused == score` stays visibly true in `--why`.
+            if shape.confidence < 1.0 {
+                *score *= shape.confidence;
+                trace.demote(*id, Rule::Uncertain, shape.confidence);
             }
         }
         Ok(())
@@ -937,7 +988,8 @@ fn fact_shapes(
     }
     let ph = vec!["?"; ids.len()].join(",");
     let mut stmt = conn.prepare(&format!(
-        "SELECT id, entity_id, object_entity_id, predicate FROM fact WHERE id IN ({ph})"
+        "SELECT id, entity_id, object_entity_id, predicate, confidence \
+         FROM fact WHERE id IN ({ph})"
     ))?;
     let rows = stmt.query_map(params_from_iter(ids.iter()), |r| {
         Ok((
@@ -946,6 +998,7 @@ fn fact_shapes(
                 entity: r.get(1)?,
                 object: r.get(2)?,
                 predicate: r.get(3)?,
+                confidence: r.get(4)?,
             },
         ))
     })?;

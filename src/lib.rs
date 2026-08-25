@@ -24,6 +24,7 @@ pub mod lint;
 pub mod locate;
 #[cfg(feature = "mcp")]
 pub mod mcp;
+pub mod md;
 pub mod norm;
 pub mod recall;
 pub mod repair;

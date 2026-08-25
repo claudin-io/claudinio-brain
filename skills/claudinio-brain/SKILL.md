@@ -129,6 +129,37 @@ A batch is also **one instant**: two claims about the same subject and predicate
 with no `at` between them are a correction, not a change over time — if you mean
 "it changed", give the second one an `at`.
 
+Add `--dry-run` when the batch touches something the brain may already hold. It
+reports what each line *would* do and writes nothing:
+
+```console
+$ brain remember --batch - --dry-run < flush.jsonl
+would supersede: auth strategy server-side sessions
+would create: fila tamanho 10
+would record 2 facts: 1 created, 1 superseded (nothing written)
+```
+
+Worth the extra call because `created` and `superseded` look identical from
+where you are standing and are not the same event: one adds a claim, the other
+ends one somebody may still be acting on. It is the real write inside a
+transaction that gets rolled back, so it does not approximate.
+
+### When you are not sure
+
+Record it anyway, and say so with `confidence` (0.0 to 1.0) rather than leaving
+it out or writing it flat:
+
+```bash
+brain remember --subject gateway --predicate timeout --value 45 --confidence 0.3 \
+  --source "inferred from the retry config, not measured"
+```
+
+A hedge is ranked below a certain claim instead of competing with it, and it is
+still returned — nothing is filtered. It climbs on its own each time somebody
+asserts the same thing again, so a guess that turns out right stops being ranked
+as a guess without anyone editing it. Omit the flag when you are not actually in
+doubt: facts default to certain, and hedging everything makes the signal useless.
+
 ## Reading
 
 ```bash
