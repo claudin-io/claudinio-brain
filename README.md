@@ -737,10 +737,24 @@ than what it would be nice for it to do:
 | Claude Code | ✅ | ✅ | ✅ |
 | Cline | ✅ | ✅ | ✅ |
 | Codex | ✅ | ✅ | ❌ its `PreCompact` schema rejects context |
-| Gemini CLI | ⚠️ open upstream bug | ✅ | ❌ |
+| Gemini CLI | ⚠️ open upstream bug | ✅ on `BeforeAgent` | ❌ |
 | OpenCode, Kilo Code | ❌ | ✅ | ❌ no lifecycle hook to attach to |
 | Cursor | ✅ | ❌ its prompt hook is a gate, not an injector | ❌ |
 | Augment | ✅ | ❌ it has no `UserPromptSubmit` | ❌ |
+
+Wiring one up is a command:
+
+```console
+$ brain hook install codex
+created /home/you/.codex/hooks.json
+codex is wired up
+```
+
+It writes the absolute path of the running binary, so there is no placeholder to
+forget; it merges into whatever config is already there rather than replacing it;
+and installing twice leaves one hook rather than two. `--dry-run` shows the plan,
+`--project` scopes it to this directory. Feature flags a harness needs switched on
+are printed as "still to do" rather than switched on for you.
 
 Codex and Gemini CLI need no new envelope: Codex implemented Claude Code's wire
 format deliberately — its engine is named `ClaudeHooksEngine` — and Gemini CLI

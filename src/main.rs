@@ -62,7 +62,7 @@ fn run(cli: Cli) -> anyhow::Result<std::process::ExitCode> {
         Cmd::Entity(args) => cmd_entity(args, &cli, &ctx),
         Cmd::Alias(args) => cmd_alias(args, &cli, &ctx),
         Cmd::Reindex => cmd_reindex(&cli, &ctx),
-        Cmd::Hook(args) => cmd_hook(args, &cli, &ctx),
+        Cmd::Hook { cmd } => cmd_hook(cmd, &cli, &ctx),
         #[cfg(feature = "mcp")]
         Cmd::Serve => cmd_serve(&cli, &ctx),
         Cmd::Export(args) => cmd_export(args, &cli, &ctx),
@@ -287,7 +287,91 @@ fn cmd_remember_batch(
 /// found nothing -- is answered with `{}`, because the alternative is an error
 /// message in somebody's session for a tool they did not invoke. See
 /// [`brain::hook`] for why that rule is absolute.
-fn cmd_hook(args: &brain::cli::HookArgs, cli: &Cli, ctx: &Ctx) -> anyhow::Result<()> {
+fn cmd_hook(cmd: &brain::cli::HookCmd, cli: &Cli, ctx: &Ctx) -> anyhow::Result<()> {
+    use brain::cli::HookCmd;
+    use brain::hook::What;
+    let (what, args) = match cmd {
+        HookCmd::Context(a) => (What::Context, a),
+        HookCmd::Recall(a) => (What::Recall, a),
+        HookCmd::Flush(a) => (What::Flush, a),
+        HookCmd::Install(a) => return cmd_hook_install(a, cli, ctx),
+    };
+    cmd_hook_answer(what, args, cli, ctx)
+}
+
+/// Wires these hooks into a harness's own configuration.
+fn cmd_hook_install(
+    args: &brain::cli::HookInstallArgs,
+    cli: &Cli,
+    ctx: &Ctx,
+) -> anyhow::Result<()> {
+    let project = args.project.then_some(ctx.cwd.as_path());
+    let plan = brain::install::plan(args.harness, project)?;
+
+    if cli.json {
+        let changes: Vec<_> = plan
+            .changes
+            .iter()
+            .map(|c| {
+                serde_json::json!({
+                    "path": c.path,
+                    "existed": c.existed,
+                    "bytes": c.contents.len(),
+                })
+            })
+            .collect();
+        if !args.dry_run {
+            brain::install::apply(&plan)?;
+        }
+        emit(&serde_json::to_string_pretty(&serde_json::json!({
+            "harness": plan.harness.as_str(),
+            "dry_run": args.dry_run,
+            "wrote": match args.dry_run { true => 0, false => plan.changes.len() },
+            "changes": changes,
+            "caveat": plan.harness.caveat(),
+        }))?);
+        return Ok(());
+    }
+
+    for c in &plan.changes {
+        // Whether the file was already there is the part somebody wants to see
+        // before this runs, not after: one of these two verbs means their existing
+        // configuration is being rewritten.
+        emit(&format!(
+            "{} {}",
+            match (c.existed, args.dry_run) {
+                (true, true) => "would update",
+                (false, true) => "would create",
+                (true, false) => "updated",
+                (false, false) => "created",
+            },
+            c.path.display()
+        ));
+    }
+    if !args.dry_run {
+        brain::install::apply(&plan)?;
+    }
+    emit(&match args.dry_run {
+        true => format!(
+            "{} would be wired up ({} files, nothing written)",
+            plan.harness.as_str(),
+            plan.changes.len()
+        ),
+        false => format!("{} is wired up", plan.harness.as_str()),
+    });
+    if let Some(c) = plan.harness.caveat() {
+        emit(&format!("\nstill to do:\n{c}"));
+    }
+    Ok(())
+}
+
+/// Answers one lifecycle event.
+fn cmd_hook_answer(
+    what: brain::hook::What,
+    args: &brain::cli::HookArgs,
+    cli: &Cli,
+    ctx: &Ctx,
+) -> anyhow::Result<()> {
     // An explicit off switch, checked before anything is opened. Turning a hook
     // off should not require editing the settings file that installed it, which
     // is usually somewhere the person debugging is not looking.
@@ -308,13 +392,9 @@ fn cmd_hook(args: &brain::cli::HookArgs, cli: &Cli, ctx: &Ctx) -> anyhow::Result
     // existing answer to that; a hook takes no flags, so it reads it from here.
     let not_scope = std::env::var("BRAIN_HOOK_NOT_SCOPE").ok();
     // `None` is silence, not an empty line -- see `hook::respond`.
-    if let Some(out) = brain::hook::respond(
-        args.what,
-        b.as_ref(),
-        &input,
-        not_scope.as_deref(),
-        args.format,
-    ) {
+    if let Some(out) =
+        brain::hook::respond(what, b.as_ref(), &input, not_scope.as_deref(), args.format)
+    {
         emit(&out);
     }
     Ok(())

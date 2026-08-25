@@ -19,6 +19,7 @@ pub mod graph;
 pub mod hook;
 pub mod ids;
 pub mod index;
+pub mod install;
 pub mod kin;
 pub mod lint;
 pub mod locate;

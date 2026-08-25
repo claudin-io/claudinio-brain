@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/ABSOLUTE/PATH/TO/claudinio-brain/hooks/brain-hook.sh context",
+            "command": "/ABSOLUTE/PATH/TO/brain hook context",
             "timeout": 15,
             "statusMessage": "Reading this project's brain"
           }
@@ -18,7 +18,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/ABSOLUTE/PATH/TO/claudinio-brain/hooks/brain-hook.sh recall",
+            "command": "/ABSOLUTE/PATH/TO/brain hook recall",
             "timeout": 10,
             "statusMessage": "Asking the brain"
           }

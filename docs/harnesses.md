@@ -11,6 +11,37 @@ deciding to*. That is the whole point: a memory an agent has to choose to consul
 answers the questions somebody already suspected it could answer. Hooks need
 per-harness configuration, because every harness invented its own.
 
+## Installing
+
+```console
+$ brain hook install codex
+created /home/you/.codex/hooks.json
+codex is wired up
+
+still to do:
+Codex loads hooks only when they are switched on. Add this to ~/.codex/config.toml:
+
+    [features]
+    codex_hooks = true
+```
+
+`--project` scopes it to this directory instead of every project; `--dry-run`
+prints what it would write and writes nothing.
+
+It writes the absolute path of the running binary, so there is no placeholder to
+forget. It **merges** into whatever is already in the file — other people's hooks,
+other events, unrelated keys all survive — and it replaces its own previous entry
+rather than adding a second one, so installing twice leaves one hook. A config
+file it cannot parse is refused rather than overwritten.
+
+What it will not do is switch on a harness's feature flags. Those are printed as
+"still to do" instead: turning on somebody's settings is a larger claim on their
+machine than writing the file they asked for, and a step you perform yourself is
+a step you know happened.
+
+The files under `hooks/` are the same configuration for hand-installing, with an
+`/ABSOLUTE/PATH/TO/brain` placeholder to replace.
+
 ## What is verified here
 
 The table says what was checked against a published schema or the harness's own
@@ -22,7 +53,7 @@ says so instead of leaving it out.
 | **Claude Code** | ✅ | ✅ | ✅ | [`hooks/hooks.json`](../hooks/hooks.json), or the plugin |
 | **Cline** | ✅ | ✅ | ✅ | [`hooks/cline/`](../hooks/cline/) |
 | **Codex** | ✅ | ✅ | ❌ *see below* | [`hooks/codex/hooks.json`](../hooks/codex/hooks.json) |
-| **Gemini CLI** | ⚠️ *see below* | ✅ | ❌ | [`hooks/gemini/settings.json`](../hooks/gemini/settings.json) |
+| **Gemini CLI** | ⚠️ *see below* | ✅ *on `BeforeAgent`* | ❌ | [`hooks/gemini/settings.json`](../hooks/gemini/settings.json) |
 | **OpenCode** | ❌ | ✅ | ❌ | [`hooks/opencode/brain.js`](../hooks/opencode/brain.js) |
 | **Kilo Code** | ❌ | ✅ | ❌ | the same plugin |
 | **Cursor** | ✅ | ❌ *see below* | ❌ | [`hooks/cursor/hooks.json`](../hooks/cursor/hooks.json) |
@@ -55,14 +86,27 @@ Codex complain on every compaction and inject nothing. `SessionStart` and
 ### Gemini CLI
 
 Same `hookSpecificOutput.additionalContext` shape, configured under `hooks` in
-`settings.json`.
+`~/.gemini/settings.json` or `<project>/.gemini/settings.json`.
 
-**The warning on SessionStart.** Gemini CLI has an open upstream issue reporting
-that `SessionStart` does not actually inject `additionalContext`
+**Its events are its own.** Gemini has no `UserPromptSubmit`. The event that
+fires after a prompt is submitted and before the agent plans — the one place it
+takes context for a turn — is **`BeforeAgent`**, and that is what recall attaches
+to. Its full lifecycle set is `BeforeTool`, `AfterTool`, `BeforeAgent`,
+`AfterAgent`, `BeforeModel`, `BeforeToolSelection`, `AfterModel`, `SessionStart`,
+`SessionEnd`, `Notification`, `PreCompress`.
+
+**Timeouts are milliseconds here**, where Claude Code and Codex count seconds.
+Same field name, three orders of magnitude apart; a `15` copied across from
+another harness is a hook that always times out.
+
+**No flush.** `PreCompress` is advisory and returns only `systemMessage`, which
+is shown to the user rather than given to the model.
+
+**The warning on SessionStart.** There is an open upstream issue reporting that
+`SessionStart` does not actually inject `additionalContext`
 ([google-gemini/gemini-cli#15413](https://github.com/google-gemini/gemini-cli/issues/15413)).
-The row is left in because the schema accepts it and the behaviour may already
-have been fixed in the version you are running; `UserPromptSubmit` is the one
-that carries the weight either way.
+The row is left in because the schema accepts it and it may be fixed in the
+version you are running; `BeforeAgent` carries the weight either way.
 
 ### Cursor
 

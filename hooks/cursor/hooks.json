@@ -3,7 +3,7 @@
   "hooks": {
     "sessionStart": [
       {
-        "command": "/ABSOLUTE/PATH/TO/claudinio-brain/hooks/brain-hook.sh context cursor"
+        "command": "/ABSOLUTE/PATH/TO/brain hook context --format cursor"
       }
     ]
   }
