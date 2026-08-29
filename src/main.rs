@@ -295,8 +295,113 @@ fn cmd_hook(cmd: &brain::cli::HookCmd, cli: &Cli, ctx: &Ctx) -> anyhow::Result<(
         HookCmd::Recall(a) => (What::Recall, a),
         HookCmd::Flush(a) => (What::Flush, a),
         HookCmd::Install(a) => return cmd_hook_install(a, cli, ctx),
+        HookCmd::Capture(a) => return cmd_hook_capture(a, cli, ctx),
     };
     cmd_hook_answer(what, args, cli, ctx)
+}
+
+/// Records what this session did.
+///
+/// The one hook that writes, and it is held to the other two's rules anyway:
+/// every failure it could have -- no brain here, no transcript, a transcript in a
+/// dialect it does not read, a write that could not happen -- is answered with
+/// `{}` and exit 0. See [`brain::capture`] for why writing at all is safe here,
+/// and for the invariant it narrows rather than breaks.
+fn cmd_hook_capture(
+    args: &brain::cli::HookCaptureArgs,
+    cli: &Cli,
+    ctx: &Ctx,
+) -> anyhow::Result<()> {
+    if std::env::var("BRAIN_HOOK").is_ok_and(|v| v == "off") {
+        emit("{}");
+        return Ok(());
+    }
+    // Every arm below that cannot proceed says the same nothing. Written as one
+    // fallible function and one caller rather than as a chain of early returns,
+    // because the property being enforced -- *no path out of here reports a
+    // problem* -- is only readable if there is one place it can be read.
+    match capture(args, cli, ctx) {
+        Some(report) => emit(&report),
+        None => emit("{}"),
+    }
+    Ok(())
+}
+
+/// The capture itself, with every "cannot" spelled `None`.
+fn capture(args: &brain::cli::HookCaptureArgs, cli: &Cli, ctx: &Ctx) -> Option<String> {
+    let input = match args.transcript {
+        // A named transcript is a caller who has already decided what to read,
+        // and who is probably not sending stdin at all.
+        Some(_) => serde_json::Value::Null,
+        None => hook_input(),
+    };
+    let path = match &args.transcript {
+        Some(p) => p.clone(),
+        None => std::path::PathBuf::from(
+            input
+                .get("transcript_path")
+                .and_then(serde_json::Value::as_str)?,
+        ),
+    };
+    let session = brain::capture::session_id(&input, &path)?;
+
+    let b = open(cli, ctx).ok()?;
+    let file = std::fs::File::open(&path).ok()?;
+    let digest = brain::capture::parse_transcript(std::io::BufReader::new(file));
+    // What this session did, minus what it has already been recorded as doing:
+    // the hook re-reads a growing transcript every turn, and the values that
+    // coexist rather than supersede would otherwise pile up. See
+    // [`brain::capture::unrecorded`].
+    let subject = format!("session/{session}");
+    let assertions = brain::capture::unrecorded(
+        &b,
+        &subject,
+        brain::capture::assertions(&digest, &session, &args.harness),
+    );
+
+    // An empty capture is the ordinary case, not a failure: most turns read a
+    // file and answer a question. It still reports, so `--json` can say so.
+    let outcomes = match args.dry_run || assertions.is_empty() {
+        true => b.rehearse(&assertions).ok()?,
+        false => b.remember_all(&assertions).ok()?,
+    };
+
+    if cli.json {
+        let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+        for o in &outcomes {
+            *counts.entry(o.kind()).or_default() += 1;
+        }
+        let facts: Vec<_> = outcomes
+            .iter()
+            .map(|o| serde_json::json!({ "outcome": o.kind(), "fact": o.fact() }))
+            .collect();
+        return serde_json::to_string_pretty(&answer(
+            &b,
+            serde_json::json!({
+                "session": subject,
+                "dry_run": args.dry_run,
+                "wrote": match args.dry_run { true => 0, false => outcomes.len() },
+                "would_write": outcomes.len(),
+                "counts": counts,
+                "facts": facts,
+            }),
+        ))
+        .ok();
+    }
+    if args.dry_run {
+        let lines: Vec<String> = outcomes
+            .iter()
+            .map(|o| format!("would {}: {}", o.would(), o.fact().statement))
+            .collect();
+        return Some(match lines.is_empty() {
+            true => "nothing to record".to_string(),
+            false => lines.join("\n"),
+        });
+    }
+    // Nothing to say, in the shape every other hook says it. Whatever this is
+    // attached to may be parsing stdout, and `{}` is the answer that is safe to
+    // hand a parser.
+    Some("{}".to_string())
 }
 
 /// Wires these hooks into a harness's own configuration.

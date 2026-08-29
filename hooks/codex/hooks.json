@@ -24,6 +24,18 @@
           }
         ]
       }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/ABSOLUTE/PATH/TO/brain hook flush",
+            "timeout": 10,
+            "statusMessage": "Asking for anything worth keeping"
+          }
+        ]
+      }
     ]
   }
 }

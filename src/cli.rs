@@ -238,6 +238,19 @@ pub enum HookCmd {
     Recall(HookArgs),
     /// Ask for what the session learned, before it is lost.
     Flush(HookArgs),
+    /// Record what this session did, from the harness's own transcript.
+    ///
+    /// The one hook that writes, and the only one that does. It reads the
+    /// transcript the harness is already keeping, extracts what happened without
+    /// a model -- what was asked for, which files changed, what was run, how it
+    /// ended -- and records it as facts about `session/<id>` in scope
+    /// `sessions`. Nothing else is ever written, so it cannot contradict a value
+    /// a person recorded.
+    ///
+    /// Safe to attach to more than one event, and meant to be: it runs at the end
+    /// of a turn and again when the session closes, always against the same
+    /// growing transcript, and the second run reasserts rather than duplicates.
+    Capture(HookCaptureArgs),
     /// Wire these hooks into a harness's configuration.
     ///
     /// Writes the absolute path of this executable, merges into whatever is
@@ -262,6 +275,30 @@ pub struct HookInstallArgs {
     pub project: bool,
 
     /// Report what would be written, and write nothing.
+    #[arg(long)]
+    pub dry_run: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct HookCaptureArgs {
+    /// The transcript to read, instead of the one the harness announced.
+    ///
+    /// For a person debugging an installation, who has a file and no harness to
+    /// send its input. The session's id then comes from the file's name, which is
+    /// where every harness that writes one puts it.
+    #[arg(long, value_name = "PATH")]
+    pub transcript: Option<PathBuf>,
+
+    /// Which harness's transcript this is, and what to record as having produced
+    /// the session.
+    ///
+    /// Stated rather than sniffed. Two harnesses can write the same field names
+    /// and mean different things by them, and a wrong guess here is a fact that
+    /// says the work happened somewhere it did not.
+    #[arg(long, value_name = "NAME", default_value = "claude-code")]
+    pub harness: String,
+
+    /// Report what would be recorded, and record nothing.
     #[arg(long)]
     pub dry_run: bool,
 }

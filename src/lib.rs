@@ -11,6 +11,7 @@
 pub mod alias;
 pub mod batch;
 pub mod brain;
+pub mod capture;
 pub mod cli;
 pub mod clock;
 pub mod config;

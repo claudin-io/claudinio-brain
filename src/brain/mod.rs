@@ -886,6 +886,39 @@ impl Brain {
         )
     }
 
+    /// What this brain learned most recently.
+    ///
+    /// The only query here that sorts on the transaction axis. Everything else
+    /// asks what is true, and orders by when it *became* true; this asks what has
+    /// been happening, and a fact backdated to last year was still learned today.
+    /// That is why it is not a [`WhichQuery`]: that one starts from a predicate
+    /// somebody already knows to ask about, and this one starts from a moment.
+    ///
+    /// `scope` is what makes it useful rather than merely interesting. Asked
+    /// across the whole brain it returns whatever was written last, which is
+    /// noise; asked of one namespace -- `sessions`, say -- it answers "what was
+    /// the last thing that happened here", which is a question with a use.
+    pub fn recent(&self, scope: Option<&str>, limit: usize) -> Result<Vec<Fact>> {
+        let now = micros(self.clock.now());
+        let mut sql = format!(
+            "{SELECT_FACT} WHERE f.retracted_at IS NULL
+               AND f.valid_from <= ?1 AND (f.valid_to IS NULL OR ?1 < f.valid_to)"
+        );
+        if scope.is_some() {
+            sql.push_str(" AND f.scope = ?3");
+        }
+        // `f.id` breaks ties, so a batch written in one transaction -- which is
+        // every capture, and every `remember --batch` -- comes back in the order
+        // it was written rather than in whatever order the rows are visited.
+        sql.push_str(" ORDER BY f.recorded_at DESC, f.id DESC LIMIT ?2");
+
+        let limit = limit as i64;
+        match scope {
+            Some(s) => query_facts(self.conn(), &sql, params![now, limit, s]),
+            None => query_facts(self.conn(), &sql, params![now, limit]),
+        }
+    }
+
     /// What was true at `t`.
     pub fn as_of(&self, subject: &str, predicate: &str, t: Timestamp) -> Result<Option<Fact>> {
         let Some(entity_id) = find_entity(self.conn(), &norm::key(subject))? else {

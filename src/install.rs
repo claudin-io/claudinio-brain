@@ -64,21 +64,55 @@ impl Harness {
     /// and a step they perform themselves is a step they know happened.
     pub fn caveat(self) -> Option<&'static str> {
         match self {
-            Self::Codex => Some(
-                "Codex loads hooks only when they are switched on. Add this to \
-                 ~/.codex/config.toml:\n\n    [features]\n    codex_hooks = true",
-            ),
             Self::Cline => Some(
                 "Cline runs hooks only when they are enabled: Settings -> Feature \
                  Settings -> Enable Hooks. macOS and Linux only.",
             ),
             Self::ClaudeCode => Some(
                 "The plugin is the maintained path here (`/plugin install \
-                 claudinio-brain@claudin-io`); this writes the same three hooks \
-                 into settings.json by hand instead.",
+                 claudinio-brain@claudin-io`); this writes the same hooks into \
+                 settings.json by hand instead.",
             ),
             _ => None,
         }
+    }
+}
+
+/// One hook entry to write.
+///
+/// A tuple until a hook needed to say more about itself than when it fires and
+/// how long it may take. `capture` runs after every turn and must not hold the
+/// next one up, and "run this without blocking" is a field rather than a
+/// convention -- so it is named here, once, instead of being remembered at each
+/// call site.
+struct Wire {
+    event: &'static str,
+    command: String,
+    /// Always in seconds. [`Unit`] converts at write time, and passing
+    /// milliseconds to the thing whose job is to produce them is how this first
+    /// shipped a ten-thousand-second timeout.
+    timeout: u64,
+    /// Whether the harness should let this one finish in the background.
+    ///
+    /// Only Claude Code documents the field, and it is only written when it is
+    /// set: an extra key is a small thing to send a parser that rejects the ones
+    /// it does not know.
+    detached: bool,
+}
+
+fn on(event: &'static str, command: String, timeout: u64) -> Wire {
+    Wire {
+        event,
+        command,
+        timeout,
+        detached: false,
+    }
+}
+
+impl Wire {
+    fn detached(mut self) -> Self {
+        self.detached = true;
+        self
     }
 }
 
@@ -139,9 +173,31 @@ pub fn plan(harness: Harness, project: Option<&Path>) -> Result<Plan> {
         Harness::ClaudeCode => vec![merge_claude_style(
             root.join(".claude/settings.json"),
             &[
-                ("SessionStart", format!("{exe} hook context"), 15),
-                ("UserPromptSubmit", format!("{exe} hook recall"), 10),
-                ("PreCompact", format!("{exe} hook flush"), 10),
+                // Plain text, not the JSON envelope. Claude Code guarantees that
+                // a session-start hook's stdout reaches the context; whether it
+                // also unwraps `additionalContext` there is no longer documented,
+                // and an envelope that stops being unwrapped does not fail -- it
+                // arrives as its own source code.
+                on(
+                    "SessionStart",
+                    format!("{exe} hook context --format text"),
+                    15,
+                ),
+                on("UserPromptSubmit", format!("{exe} hook recall"), 10),
+                on("PreCompact", format!("{exe} hook flush"), 10),
+                // The two ends of capturing a session, and both are needed.
+                //
+                // `Stop` fires after every turn, so the record survives a session
+                // that is killed or crashes and never reaches `SessionEnd`. It is
+                // detached because it runs on the path between the user's turns,
+                // and a hook that makes somebody wait is a hook they uninstall.
+                //
+                // `SessionEnd` is the last and most complete look at the
+                // transcript. Its timeout is not decoration: hooks there share a
+                // second and a half unless one asks for longer, and a hook killed
+                // on its timeout has its work discarded.
+                on("Stop", format!("{exe} hook capture"), 60).detached(),
+                on("SessionEnd", format!("{exe} hook capture"), 60),
             ],
             Seconds,
         )?],
@@ -153,11 +209,13 @@ pub fn plan(harness: Harness, project: Option<&Path>) -> Result<Plan> {
                 false => root.join(".codex/hooks.json"),
             },
             &[
-                ("SessionStart", format!("{exe} hook context"), 15),
-                ("UserPromptSubmit", format!("{exe} hook recall"), 10),
-                // No PreCompact: its output schema carries only the universal
-                // fields and denies unknown ones, so context sent there is
-                // rejected rather than ignored. See docs/harnesses.md.
+                on("SessionStart", format!("{exe} hook context"), 15),
+                on("UserPromptSubmit", format!("{exe} hook recall"), 10),
+                // `PreCompact` used to be impossible here: its output schema
+                // carried only the universal fields and denied unknown ones, so
+                // context sent to it was rejected rather than ignored. Codex
+                // documents the shared `hookSpecificOutput` contract on it now.
+                on("PreCompact", format!("{exe} hook flush"), 10),
             ],
             Seconds,
         )?],
@@ -167,11 +225,11 @@ pub fn plan(harness: Harness, project: Option<&Path>) -> Result<Plan> {
                 // Seconds here, always. `Unit` below is what converts, and passing
                 // milliseconds to something whose job is to produce them is how
                 // this first shipped a ten-thousand-second timeout.
-                ("SessionStart", format!("{exe} hook context"), 15),
+                on("SessionStart", format!("{exe} hook context"), 15),
                 // Not `UserPromptSubmit`, which Gemini does not have. `BeforeAgent`
                 // is its "after the prompt, before the agent plans" event, and the
                 // one place it accepts additionalContext per turn.
-                ("BeforeAgent", format!("{exe} hook recall"), 10),
+                on("BeforeAgent", format!("{exe} hook recall"), 10),
             ],
             // Gemini counts this one in milliseconds. Same field, same shape,
             // three orders of magnitude apart.
@@ -180,7 +238,7 @@ pub fn plan(harness: Harness, project: Option<&Path>) -> Result<Plan> {
         Harness::Augment => vec![merge_claude_style(
             root.join(".augment/settings.json"),
             // SessionStart only: Augment has no prompt hook at all.
-            &[("SessionStart", format!("{exe} hook context"), 15)],
+            &[on("SessionStart", format!("{exe} hook context"), 15)],
             Seconds,
         )?],
         Harness::Cursor => vec![merge_cursor(
@@ -270,35 +328,40 @@ fn cline_scripts(root: &Path, exe: &str, scoped: bool) -> Result<Vec<Change>> {
 
 /// Merges into the shape Claude Code, Codex, Gemini CLI and Augment all share:
 /// `hooks` -> event -> a list of matcher groups, each holding command entries.
-/// `events` is `(event name, command, timeout in **seconds**)`; `unit` is what
-/// turns the last of those into whatever the harness counts in.
-fn merge_claude_style(path: PathBuf, events: &[(&str, String, u64)], unit: Unit) -> Result<Change> {
+/// `unit` is what turns each [`Wire`]'s timeout into whatever the harness counts
+/// in.
+fn merge_claude_style(path: PathBuf, wires: &[Wire], unit: Unit) -> Result<Change> {
     let mut root = read_object(&path)?;
     let hooks = entry_object(&mut root, "hooks");
 
-    for (event, command, timeout) in events {
+    for w in wires {
         let list = hooks
-            .entry(event.to_string())
+            .entry(w.event.to_string())
             .or_insert_with(|| json!([]))
             .as_array_mut()
             .ok_or_else(|| {
-                InstallError::NotMergeable(path.clone(), format!("`hooks.{event}` is not a list"))
+                InstallError::NotMergeable(
+                    path.clone(),
+                    format!("`hooks.{}` is not a list", w.event),
+                )
             })?;
 
         // Ours are removed before ours are added, so a second install replaces a
         // first rather than stacking. Everybody else's groups are left exactly
         // where they were.
         list.retain(|group| !is_ours(group.pointer("/hooks")));
-        list.push(json!({
-            // Only the three fields all four of these harnesses document. A
-            // cosmetic extra would be riding on each of them being lenient about
-            // fields it does not know, and one of them parses this with serde.
-            "hooks": [{
-                "type": "command",
-                "command": command,
-                "timeout": unit.of(*timeout),
-            }]
-        }));
+        // Only the fields these harnesses document. A cosmetic extra would be
+        // riding on each of them being lenient about fields it does not know, and
+        // one of them parses this with serde.
+        let mut entry = json!({
+            "type": "command",
+            "command": w.command,
+            "timeout": unit.of(w.timeout),
+        });
+        if w.detached {
+            entry["async"] = json!(true);
+        }
+        list.push(json!({ "hooks": [entry] }));
     }
     Ok(file(path, pretty(&Value::Object(root)), false))
 }
@@ -335,7 +398,13 @@ fn is_ours(hooks: Option<&Value>) -> bool {
 
 fn is_our_command(command: Option<&Value>) -> bool {
     command.and_then(Value::as_str).is_some_and(|c| {
-        c.contains("hook context") || c.contains("hook recall") || c.contains("hook flush")
+        // Every subcommand this writes, and it has to stay that way: an entry
+        // whose command is not recognised is not replaced on the next install,
+        // it is left in place beside the new one.
+        c.contains("hook context")
+            || c.contains("hook recall")
+            || c.contains("hook flush")
+            || c.contains("hook capture")
     })
 }
 

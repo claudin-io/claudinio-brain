@@ -203,3 +203,174 @@ fn an_unparseable_config_is_refused_not_overwritten() {
         "and leaves the file alone"
     );
 }
+
+// --- passo 25: wiring the hook that writes --------------------------------
+
+/// `SessionEnd` is where a session's record gets its last and most complete
+/// look at the transcript, and it is also the event with the shortest leash:
+/// hooks there share a second and a half unless one of them asks for longer, and
+/// a hook killed on its timeout has its work thrown away. The timeout is not
+/// decoration here -- it is the difference between capturing and not.
+#[test]
+fn claude_code_gets_a_session_end_capture_with_its_own_timeout() {
+    let s = Sandbox::new();
+    s.install("claude-code", &[]);
+    let v = s.json(".claude/settings.json");
+
+    let entry = v
+        .pointer("/hooks/SessionEnd/0/hooks/0")
+        .unwrap_or_else(|| panic!("a SessionEnd hook: {v}"));
+    assert!(
+        entry["command"].as_str().unwrap().contains("hook capture"),
+        "{entry}"
+    );
+    assert!(
+        entry["timeout"].as_u64().unwrap() >= 60,
+        "long enough to survive the shared budget: {entry}"
+    );
+}
+
+/// A session that is killed, crashes, or is closed by the window going away
+/// never reaches `SessionEnd`. Capturing on `Stop` as well is what makes the
+/// record survive that -- and it has to be `async`, because a hook that runs
+/// after every turn and blocks the next one is a hook that gets uninstalled.
+#[test]
+fn a_stop_capture_runs_async() {
+    let s = Sandbox::new();
+    s.install("claude-code", &[]);
+    let v = s.json(".claude/settings.json");
+
+    let entry = v
+        .pointer("/hooks/Stop/0/hooks/0")
+        .unwrap_or_else(|| panic!("a Stop hook: {v}"));
+    assert!(
+        entry["command"].as_str().unwrap().contains("hook capture"),
+        "{entry}"
+    );
+    assert_eq!(
+        entry["async"].as_bool(),
+        Some(true),
+        "it must not block the next turn: {entry}"
+    );
+}
+
+/// Claude Code guarantees that a `SessionStart` hook's plain stdout reaches the
+/// context; whether it also reads `additionalContext` there is no longer
+/// documented. A JSON envelope that stops being unwrapped does not fail -- it
+/// arrives as its own source code, which is worse than not arriving.
+#[test]
+fn session_start_speaks_plain_text_for_claude() {
+    let s = Sandbox::new();
+    s.install("claude-code", &[]);
+    let v = s.json(".claude/settings.json");
+
+    let command = v
+        .pointer("/hooks/SessionStart/0/hooks/0/command")
+        .and_then(Value::as_str)
+        .unwrap();
+    assert!(command.contains("hook context --format text"), "{command}");
+    // The prompt event is unchanged: `additionalContext` is documented there,
+    // and it is the only shape that can carry an answer without becoming one.
+    let recall = v
+        .pointer("/hooks/UserPromptSubmit/0/hooks/0/command")
+        .and_then(Value::as_str)
+        .unwrap();
+    assert!(!recall.contains("--format"), "{recall}");
+}
+
+/// Somebody who installed before this existed has the old three hooks in their
+/// file. Installing again has to replace them, not sit beside them -- the
+/// installer recognises its own entries by the command they run, and a
+/// subcommand it does not know about is a subcommand it would leave behind.
+#[test]
+fn installing_over_the_old_three_hooks_upgrades_them() {
+    let s = Sandbox::new();
+    std::fs::create_dir_all(s.home.join(".claude")).unwrap();
+    std::fs::write(
+        s.home.join(".claude/settings.json"),
+        r#"{
+          "hooks": {
+            "SessionStart": [{"hooks":[{"type":"command","command":"/old/brain hook context","timeout":15}]}],
+            "Stop": [{"hooks":[{"type":"command","command":"/old/brain hook capture"}]}]
+          }
+        }"#,
+    )
+    .unwrap();
+
+    s.install("claude-code", &[]);
+    let v = s.json(".claude/settings.json");
+
+    assert!(!v.to_string().contains("/old/brain"), "replaced: {v}");
+    for event in ["SessionStart", "Stop"] {
+        assert_eq!(
+            v.pointer(&format!("/hooks/{event}"))
+                .and_then(Value::as_array)
+                .unwrap()
+                .len(),
+            1,
+            "{event} has one of ours: {v}"
+        );
+    }
+}
+
+/// Codex switched hooks on by default and renamed the flag that used to gate
+/// them. A "still to do" that is no longer to do costs more than saying nothing:
+/// it is a step somebody performs, finds no effect from, and then distrusts the
+/// rest of the message for.
+#[test]
+fn the_codex_caveat_no_longer_asks_for_a_flag() {
+    let s = Sandbox::new();
+    let said = s.install("codex", &[]);
+    assert!(!said.contains("codex_hooks"), "{said}");
+}
+
+/// Codex has `PreCompact` now, and it reads the same envelope the others do.
+/// The flush prompt is the only chance to write down what a session learned
+/// before the transcript it learned it from is summarised away.
+#[test]
+fn codex_gets_the_flush_it_used_to_be_denied() {
+    let s = Sandbox::new();
+    s.install("codex", &[]);
+    let v = s.json(".codex/hooks.json");
+    assert!(
+        v.pointer("/hooks/PreCompact/0/hooks/0/command")
+            .and_then(Value::as_str)
+            .is_some_and(|c| c.contains("hook flush")),
+        "{v}"
+    );
+}
+
+/// The plugin and the installer write the same hooks into two different files,
+/// and there is nothing in either that would notice them drifting apart. Somebody
+/// on the plugin and somebody who ran `hook install` should get the same brain.
+#[test]
+fn the_plugin_and_the_installer_wire_the_same_events() {
+    let s = Sandbox::new();
+    s.install("claude-code", &[]);
+    let installed = s.json(".claude/settings.json");
+
+    let plugin: Value = serde_json::from_str(
+        &std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("hooks/hooks.json"),
+        )
+        .expect("the plugin's hooks.json"),
+    )
+    .expect("valid JSON");
+
+    let events = |v: &Value| -> Vec<String> {
+        let mut e: Vec<String> = v["hooks"].as_object().unwrap().keys().cloned().collect();
+        e.sort();
+        e
+    };
+    assert_eq!(events(&installed), events(&plugin));
+
+    // And the one hook whose behaviour is not visible from its event: `Stop`
+    // fires between the user's turns, so both have to say it does not block.
+    assert_eq!(
+        plugin
+            .pointer("/hooks/Stop/0/hooks/0/async")
+            .and_then(Value::as_bool),
+        Some(true),
+        "{plugin}"
+    );
+}

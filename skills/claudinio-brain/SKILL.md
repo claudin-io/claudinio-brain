@@ -403,6 +403,16 @@ silently returns nothing. Use `which`.
   the injected facts as what the brain currently holds, not as the user's words,
   and check `brain history` before overriding one.
 
+- **The sessions are already being recorded.** A capture hook writes what each
+  session *did* — `worked_on`, `edited`, `ran`, `branch`, `concluded` about a
+  subject named `session/<id>`, in scope `sessions` — and the session-start hook
+  reads the last one back. Do not write those facts yourself, and do not treat
+  them as somebody's decision: they are a record of activity, not of intent.
+  `brain which worked_on --scope sessions` is the history of what has been worked
+  on here; `brain entity "session/<id>"` is one session in full. What a session
+  *learned* is still yours to record with `remember`, and that is the part
+  capture deliberately does not try to guess.
+
 ## If MCP is available instead
 
 `brain serve` exposes the same operations as MCP tools (`remember`, `link`,
