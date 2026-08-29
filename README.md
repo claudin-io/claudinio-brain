@@ -855,7 +855,7 @@ shows you and exactly what the graph draws.
 
 Writes can be rehearsed before they land (`--dry-run`), a claim can be recorded
 as less than certain and is ranked accordingly, the brain exports to Markdown for
-review in a diff, and eight harnesses have hook configuration — each documented
+review in a diff, and ten harnesses have hook configuration — each documented
 by what it can actually do rather than what would be convenient. What is not
 built: any way to capture what a session learned without the agent deciding to
 write it.

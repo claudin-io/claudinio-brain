@@ -15,3 +15,7 @@ models/**/model.safetensors
 /python/dist/
 __pycache__/
 .pytest_cache/
+
+# macOS and editor-tool scratch. Neither is anybody else's business.
+.DS_Store
+/.serena/
