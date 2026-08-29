@@ -57,14 +57,19 @@ follow:
 `brain hook context --format text` is the other half: the introduction, run once
 when the agent starts rather than on every turn.
 
-There is a package that has already written this, with an adapter per framework:
+There is a package that has already written it:
 
 ```console
 $ pip install claudinio-brain-hooks
 ```
 
-See [`python/`](../python/). It is a convenience, not a dependency — the function
-above is the whole of what it does.
+`recall`, `context`, `flush` and `prepend`, plus the four callback shapes that
+can be matched without importing anything — `langgraph_node()`, `autogen_hook()`,
+`prime_crew_task()` and `instructions()`. See [`python/`](../python/).
+
+It is a convenience rather than a dependency, and it stops where honesty does:
+the frameworks that want a subclass are written out below as five lines each,
+because five lines you can read beat an adapter you have to trust.
 
 ## Capture does not apply
 

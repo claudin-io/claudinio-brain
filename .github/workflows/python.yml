@@ -1,0 +1,70 @@
+name: Python
+
+# The pip package is a thin thing -- three subprocess calls and four callback
+# shapes -- and it is versioned separately from the crate on purpose: it adapts
+# to frameworks that move on their own schedule, and a fix there should not
+# require cutting a binary release.
+#
+# Publishing is deliberately not wired to run. Building and testing on every
+# change is this workflow's whole job today; the release step below is left
+# commented rather than removed, so that whoever creates the PyPI project and
+# configures trusted publishing has the shape in front of them instead of
+# guessing at it.
+on:
+  push:
+    branches: [main]
+    paths: ['python/**', '.github/workflows/python.yml']
+  pull_request:
+    paths: ['python/**', '.github/workflows/python.yml']
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The floor declared in pyproject.toml, and the current release. The
+        # floor is the one that catches syntax this package has no need for.
+        python: ['3.9', '3.13']
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python }}
+      - run: pip install pytest
+      - run: python -m pytest
+        working-directory: python
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - run: pip install build twine
+      - run: python -m build
+        working-directory: python
+      # A wheel that builds and a wheel PyPI will accept are different claims.
+      - run: python -m twine check dist/*
+        working-directory: python
+      - uses: actions/upload-artifact@v7
+        with:
+          name: claudinio-brain-hooks-dist
+          path: python/dist/
+
+  # publish:
+  #   needs: build
+  #   if: startsWith(github.ref, 'refs/tags/python-v')
+  #   runs-on: ubuntu-latest
+  #   environment: pypi
+  #   permissions:
+  #     id-token: write # trusted publishing; no token in a secret
+  #   steps:
+  #     - uses: actions/download-artifact@v8
+  #       with:
+  #         name: claudinio-brain-hooks-dist
+  #         path: dist/
+  #     - uses: pypa/gh-action-pypi-publish@release/v1
