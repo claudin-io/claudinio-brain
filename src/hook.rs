@@ -78,6 +78,10 @@ const MIN_PROMPT_CHARS: usize = 8;
 /// - **`Cline`** answers `cancel` and `contextModification` on every one of its
 ///   events. `cancel` is always `false` here: this hook reads, and a memory that
 ///   could veto somebody's prompt would be a very different tool.
+/// - **`Hermes`** injects through a flat `context`. Its other documented answer,
+///   `decision` and `reason`, is Claude Code's vocabulary borrowed for a
+///   different job -- deciding whether a tool call happens -- and nothing here
+///   emits it. A memory that could veto a tool call would be a different tool.
 /// - **`Text`** is the escape hatch for everything else: stdout, no schema. A
 ///   harness nobody here has verified can still be wired by hand.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
@@ -89,6 +93,8 @@ pub enum Format {
     Cursor,
     /// `{"cancel": false, "contextModification": ...}`
     Cline,
+    /// `{"context": ...}`
+    Hermes,
     /// The context itself, and nothing when there is none.
     Text,
 }
@@ -122,6 +128,14 @@ pub fn respond(
             // call this field camelCase while printing it snake_case; the literal
             // in the schema block is what is implemented here.
             Some(t) => json!({ "additional_context": t }).to_string(),
+            None => "{}".to_string(),
+        }),
+        Format::Hermes => Some(match body {
+            // Flat, and only ever this key. Hermes reads `context` on
+            // `pre_llm_call` and ignores it elsewhere, which is the correct
+            // outcome for a hook attached to an event that cannot inject: it
+            // answers in its own shape and the harness drops it.
+            Some(t) => json!({ "context": t }).to_string(),
             None => "{}".to_string(),
         }),
         Format::Text => body,
@@ -188,18 +202,20 @@ pub fn text(
 
 /// Finds the prompt in whatever the harness put on stdin.
 ///
-/// Two shapes, both read from a published contract rather than guessed at. Claude
-/// Code, Codex, Cursor and Gemini CLI all put it at the top level; Cline nests it
-/// under the event's own name.
+/// Three shapes, all read from a published contract rather than guessed at.
+/// Claude Code, Codex, Cursor and Gemini CLI all put it at the top level; Cline
+/// nests it under the event's own name; Hermes puts it at the top level under a
+/// different name, `user_message`.
 ///
 /// A list rather than a parser, and deliberately short. Every entry here is a
-/// harness whose schema somebody checked, and the cost of guessing at a third
+/// harness whose schema somebody checked, and the cost of guessing at a fourth
 /// shape is not an error -- it is a hook that installs cleanly, runs on every
 /// prompt, and silently answers nothing.
 fn prompt_of(input: &Value) -> Option<&str> {
     input
         .get("prompt")
         .or_else(|| input.pointer("/userPromptSubmit/prompt"))
+        .or_else(|| input.get("user_message"))
         .and_then(Value::as_str)
 }
 
@@ -236,6 +252,15 @@ fn introduce(b: &Brain, input: &Value) -> Option<String> {
     // transcript was just summarised away, which is the moment this text is worth
     // the most.
     if let Some("resume" | "fork") = input.get("source").and_then(Value::as_str) {
+        return None;
+    }
+    // The same judgement, for a harness that has no session-start event to
+    // attach this to at all. Hermes injects on one event only, `pre_llm_call`,
+    // which fires on every turn -- so the hook that introduces the brain is the
+    // one that has to know which turn is the first, and Hermes states it rather
+    // than leaving it to be counted. Absent, this is not a Hermes payload and
+    // the field decides nothing.
+    if input.pointer("/extra/is_first_turn") == Some(&json!(false)) {
         return None;
     }
     let store = b.store();

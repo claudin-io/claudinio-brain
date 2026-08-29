@@ -465,6 +465,102 @@ fn cursor_gets_its_own_envelope() {
     );
 }
 
+/// Hermes injects through a flat `context`, and that is the whole of what this
+/// hook wants from it. Its other documented answer -- `decision` and `reason`,
+/// borrowed from Claude Code -- is a gate: it decides whether a tool call
+/// happens. A memory that answered in that vocabulary would be claiming a power
+/// it does not want and cannot be trusted with, so the envelope is checked for
+/// what it must *not* contain as well as for what it must.
+#[test]
+fn hermes_reads_its_context_field() {
+    let s = Sandbox::new(true);
+    let out = s
+        .cmd()
+        .args(["hook", "recall", "--format", "hermes"])
+        .write_stdin(
+            json!({
+                "hook_event_name": "pre_llm_call",
+                "user_message": "qual a estrategia de auth que usamos",
+            })
+            .to_string(),
+        )
+        .output()
+        .unwrap();
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let ctx = v
+        .get("context")
+        .and_then(Value::as_str)
+        .expect("a flat context");
+    assert!(ctx.contains("server-side sessions"), "{ctx}");
+    assert!(
+        v.get("hookSpecificOutput").is_none() && v.get("additional_context").is_none(),
+        "nobody else's envelope: {v}"
+    );
+    assert!(
+        v.get("decision").is_none() && v.get("action").is_none(),
+        "recall injects, it does not gate: {v}"
+    );
+}
+
+/// Hermes puts the prompt in `user_message`, at the top level, where every other
+/// harness here puts `prompt`. That is one field name in one published schema,
+/// and getting it wrong costs nothing visible: the hook installs, runs on every
+/// turn and answers `{}` forever, which is indistinguishable from a brain with
+/// nothing to say. Hence a test that asks for the answer rather than for the
+/// absence of a crash.
+#[test]
+fn a_hermes_prompt_is_where_hermes_puts_it() {
+    let s = Sandbox::new(true);
+    let v = s.hook(
+        "recall",
+        json!({
+            "hook_event_name": "pre_llm_call",
+            "user_message": "qual a estrategia de auth que usamos",
+            "session_id": "sess_abc123",
+        }),
+    );
+    let ctx = v
+        .pointer("/hookSpecificOutput/additionalContext")
+        .and_then(Value::as_str)
+        .expect("the prompt was found");
+    assert!(ctx.contains("server-side sessions"), "{ctx}");
+}
+
+/// The introduction is worth paying for once per session, and `pre_llm_call` is
+/// the only event Hermes injects on -- so the hook that introduces the brain
+/// fires on every turn and has to decide for itself which one is the first.
+///
+/// Same rule as `source: resume`, one harness over: not every prompt that can
+/// carry an introduction is a session starting. Hermes states it outright in
+/// `extra.is_first_turn`, so this reads it rather than counting anything.
+#[test]
+fn hermes_is_introduced_on_its_first_turn_only() {
+    let s = Sandbox::new(true);
+    let first = s.hook(
+        "context",
+        json!({
+            "hook_event_name": "pre_llm_call",
+            "user_message": "vamos comecar",
+            "extra": {"is_first_turn": true},
+        }),
+    );
+    let ctx = first
+        .pointer("/hookSpecificOutput/additionalContext")
+        .and_then(Value::as_str)
+        .expect("the first turn is introduced");
+    assert!(ctx.contains("loja"), "{ctx}");
+
+    let later = s.hook(
+        "context",
+        json!({
+            "hook_event_name": "pre_llm_call",
+            "user_message": "e agora?",
+            "extra": {"is_first_turn": false},
+        }),
+    );
+    assert_eq!(later, json!({}), "the second turn is not introduced again");
+}
+
 /// Nothing to say is not the same sentence in every envelope. A harness parsing
 /// stdout needs an empty object; one splicing stdout into a prompt needs an empty
 /// file, because `{}` in a prompt is the hook adding noise on the one path where
@@ -473,7 +569,7 @@ fn cursor_gets_its_own_envelope() {
 fn nothing_to_say_is_spelled_per_envelope() {
     let s = Sandbox::new(false); // no brain here at all
 
-    for format in ["claude", "cursor"] {
+    for format in ["claude", "cursor", "hermes"] {
         let out = s
             .cmd()
             .args(["hook", "context", "--format", format])

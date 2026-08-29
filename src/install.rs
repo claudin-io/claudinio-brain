@@ -41,6 +41,8 @@ pub enum Harness {
     Augment,
     Opencode,
     Kilo,
+    Hermes,
+    Openclaw,
 }
 
 impl Harness {
@@ -54,6 +56,8 @@ impl Harness {
             Self::Augment => "augment",
             Self::Opencode => "opencode",
             Self::Kilo => "kilo",
+            Self::Hermes => "hermes",
+            Self::Openclaw => "openclaw",
         }
     }
 
@@ -72,6 +76,23 @@ impl Harness {
                 "The plugin is the maintained path here (`/plugin install \
                  claudinio-brain@claudin-io`); this writes the same hooks into \
                  settings.json by hand instead.",
+            ),
+            Self::Hermes => Some(
+                "Hermes asks before it runs a hook it has not seen before, so the \
+                 first session after this shows a prompt and the hooks do nothing \
+                 until it is answered. Approve them once, or set \
+                 `hooks_auto_accept: true` in the same file (or \
+                 `HERMES_ACCEPT_HOOKS=1` in the environment) to skip the gate. \
+                 Note also that this file was rewritten through a YAML parser: \
+                 every value survived, and any comments in it did not.",
+            ),
+            Self::Openclaw => Some(
+                "OpenClaw registers a plugin through its own command, and gates \
+                 conversation hooks behind a flag. Both are yours to run:\n  \
+                 openclaw plugins install --link <the directory above>\n  \
+                 and, in openclaw.json: {\"plugins\": {\"entries\": \
+                 {\"claudinio-brain\": {\"enabled\": true, \"hooks\": \
+                 {\"allowConversationAccess\": true}}}}}",
             ),
             _ => None,
         }
@@ -140,8 +161,13 @@ pub enum InstallError {
     NoExe(std::io::Error),
     #[error("no home directory to install into")]
     NoHome,
-    #[error("{0} is not JSON this can merge into: {1}")]
+    #[error("{0} is not something this can merge into: {1}")]
     NotMergeable(PathBuf, String),
+    #[error(
+        "{0} keeps its configuration in one user-level file, so there is nothing \
+         for --project to scope; install it without --project"
+    )]
+    NoProjectScope(&'static str),
     #[error("{0}: {1}")]
     Io(PathBuf, std::io::Error),
 }
@@ -254,6 +280,56 @@ pub fn plan(harness: Harness, project: Option<&Path>) -> Result<Plan> {
             PLUGIN_JS.to_string(),
             false,
         )],
+        Harness::Hermes => {
+            // Hermes reads one config file, in the home directory, and documents
+            // no project-level equivalent. A `<project>/.hermes/config.yaml`
+            // would be written successfully, read by nobody, and look exactly
+            // like a brain with nothing to say -- which is the failure this
+            // whole module exists to prevent.
+            if scoped {
+                return Err(InstallError::NoProjectScope(harness.as_str()));
+            }
+            vec![merge_hermes_yaml(
+                root.join(".hermes/config.yaml"),
+                &[
+                    // Both on the same event, because Hermes injects on exactly
+                    // one. `on_session_start` exists and ignores whatever a hook
+                    // returns, so the introduction rides on the per-turn event
+                    // and decides for itself which turn is the first -- see
+                    // `hook::introduce` and `extra.is_first_turn`.
+                    //
+                    // Order is load-bearing: the introduction is only worth
+                    // anything on the turn it is first, so it goes first.
+                    on(
+                        "pre_llm_call",
+                        format!("{exe} hook context --format hermes"),
+                        15,
+                    ),
+                    on(
+                        "pre_llm_call",
+                        format!("{exe} hook recall --format hermes"),
+                        10,
+                    ),
+                ],
+            )?]
+        }
+        Harness::Openclaw => {
+            // A directory rather than a file, and a staging directory rather
+            // than a drop-in one: OpenClaw discovers plugins through
+            // `openclaw plugins install --link <path>`, so where these three
+            // files sit is this installer's choice and the command that adopts
+            // them is the person's. Both halves are in the caveat.
+            let dir = root.join(".openclaw/plugins/claudinio-brain");
+            vec![
+                file(dir.join("package.json"), OPENCLAW_PKG.to_string(), false),
+                file(
+                    dir.join("openclaw.plugin.json"),
+                    OPENCLAW_MANIFEST.to_string(),
+                    false,
+                ),
+                file(dir.join("index.ts"), OPENCLAW_ENTRY.to_string(), false),
+            ]
+        }
         Harness::Kilo => vec![file(
             match scoped {
                 true => root.join(".kilo/plugin/claudinio-brain.js"),
@@ -271,6 +347,12 @@ pub fn plan(harness: Harness, project: Option<&Path>) -> Result<Plan> {
 /// One source for the file in the repository and the file this writes, so the two
 /// cannot say different things.
 const PLUGIN_JS: &str = include_str!("../hooks/opencode/brain.js");
+
+/// The OpenClaw plugin, for the same reason: one source for the copy in the
+/// repository and the copy this writes.
+const OPENCLAW_PKG: &str = include_str!("../hooks/openclaw/package.json");
+const OPENCLAW_MANIFEST: &str = include_str!("../hooks/openclaw/openclaw.plugin.json");
+const OPENCLAW_ENTRY: &str = include_str!("../hooks/openclaw/index.ts");
 
 /// What unit a harness counts a hook timeout in.
 #[derive(Debug, Clone, Copy)]
@@ -378,9 +460,92 @@ fn merge_cursor(path: PathBuf, command: String) -> Result<Change> {
         .ok_or_else(|| {
             InstallError::NotMergeable(path.clone(), "`hooks.sessionStart` is not a list".into())
         })?;
-    list.retain(|e| !is_our_command(e.get("command")));
+    list.retain(|e| !is_our_command(e.get("command").and_then(Value::as_str)));
     list.push(json!({ "command": command }));
     Ok(file(path, pretty(&Value::Object(root)), false))
+}
+
+/// Hermes's shape: `hooks` -> event -> a flat list of entries, each with its own
+/// `command`. Closer to Cursor's than to Claude Code's -- there is no matcher
+/// group wrapping the command -- and in YAML rather than JSON, because that is
+/// the file Hermes keeps the rest of its configuration in.
+///
+/// Two hooks share `pre_llm_call` here, which is why clearing and adding are two
+/// passes rather than one: clearing inside the loop would delete the entry the
+/// previous iteration had just added.
+fn merge_hermes_yaml(path: PathBuf, wires: &[Wire]) -> Result<Change> {
+    let mut root = read_yaml_mapping(&path)?;
+    let hooks = yaml_entry_mapping(&mut root, "hooks").ok_or_else(|| {
+        InstallError::NotMergeable(path.clone(), "`hooks` is not a mapping".into())
+    })?;
+
+    for w in wires {
+        let list = yaml_entry_sequence(hooks, w.event).ok_or_else(|| {
+            InstallError::NotMergeable(path.clone(), format!("`hooks.{}` is not a list", w.event))
+        })?;
+        // Everybody else's entries stay exactly where they were, with whatever
+        // fields they carry -- `matcher` and `fail_closed` are theirs, not ours.
+        list.retain(|e| !is_our_command(e.get("command").and_then(serde_yaml_ng::Value::as_str)));
+    }
+    for w in wires {
+        let Some(list) = yaml_entry_sequence(hooks, w.event) else {
+            continue;
+        };
+        let mut entry = serde_yaml_ng::Mapping::new();
+        entry.insert("command".into(), w.command.clone().into());
+        // Seconds. Hermes clamps anything over 300 and warns about it, and
+        // neither of these is close.
+        entry.insert("timeout".into(), w.timeout.into());
+        list.push(serde_yaml_ng::Value::Mapping(entry));
+    }
+
+    let text = serde_yaml_ng::to_string(&serde_yaml_ng::Value::Mapping(root))
+        .map_err(|e| InstallError::NotMergeable(path.clone(), e.to_string()))?;
+    Ok(file(path, text, false))
+}
+
+/// Reads an existing YAML config, or starts an empty one.
+///
+/// Same rule as [`read_object`], and it matters more here: this is the file
+/// Hermes keeps its models, its gateway and everything else in, so a parse
+/// failure that got overwritten would take somebody's whole setup with it.
+fn read_yaml_mapping(path: &Path) -> Result<serde_yaml_ng::Mapping> {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return Ok(serde_yaml_ng::Mapping::new());
+    };
+    if text.trim().is_empty() {
+        return Ok(serde_yaml_ng::Mapping::new());
+    }
+    match serde_yaml_ng::from_str::<serde_yaml_ng::Value>(&text) {
+        Ok(serde_yaml_ng::Value::Mapping(m)) => Ok(m),
+        Ok(_) => Err(InstallError::NotMergeable(
+            path.to_path_buf(),
+            "the top level is not a mapping".into(),
+        )),
+        Err(e) => Err(InstallError::NotMergeable(
+            path.to_path_buf(),
+            e.to_string(),
+        )),
+    }
+}
+
+fn yaml_entry_mapping<'a>(
+    root: &'a mut serde_yaml_ng::Mapping,
+    key: &str,
+) -> Option<&'a mut serde_yaml_ng::Mapping> {
+    root.entry(key.into())
+        .or_insert_with(|| serde_yaml_ng::Value::Mapping(serde_yaml_ng::Mapping::new()))
+        .as_mapping_mut()
+}
+
+fn yaml_entry_sequence<'a>(
+    hooks: &'a mut serde_yaml_ng::Mapping,
+    event: &str,
+) -> Option<&'a mut serde_yaml_ng::Sequence> {
+    hooks
+        .entry(event.into())
+        .or_insert_with(|| serde_yaml_ng::Value::Sequence(Vec::new()))
+        .as_sequence_mut()
 }
 
 /// Whether a matcher group is one this wrote.
@@ -391,13 +556,14 @@ fn merge_cursor(path: PathBuf, command: String) -> Result<Change> {
 /// a hand-written entry with the generated one is the correct outcome anyway --
 /// that is what somebody running the installer asked for.
 fn is_ours(hooks: Option<&Value>) -> bool {
-    hooks
-        .and_then(Value::as_array)
-        .is_some_and(|v| v.iter().any(|h| is_our_command(h.get("command"))))
+    hooks.and_then(Value::as_array).is_some_and(|v| {
+        v.iter()
+            .any(|h| is_our_command(h.get("command").and_then(Value::as_str)))
+    })
 }
 
-fn is_our_command(command: Option<&Value>) -> bool {
-    command.and_then(Value::as_str).is_some_and(|c| {
+fn is_our_command(command: Option<&str>) -> bool {
+    command.is_some_and(|c| {
         // Every subcommand this writes, and it has to stay that way: an entry
         // whose command is not recognised is not replaced on the next install,
         // it is left in place beside the new one.

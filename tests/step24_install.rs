@@ -47,6 +47,27 @@ impl Sandbox {
         let text = std::fs::read_to_string(self.home.join(rel)).expect(rel);
         serde_json::from_str(&text).expect("valid JSON")
     }
+
+    /// Hermes keeps its hooks in the config file it keeps everything else in, so
+    /// what comes back here is somebody's whole setup rather than a file this
+    /// owns.
+    fn yaml(&self, rel: &str) -> Value {
+        let text = std::fs::read_to_string(self.home.join(rel)).expect(rel);
+        serde_yaml_ng::from_str(&text).expect("valid YAML")
+    }
+}
+
+/// The commands this wrote, for one event, in the order they were written.
+fn commands(v: &Value, event: &str) -> Vec<String> {
+    v.pointer(&format!("/hooks/{event}"))
+        .and_then(Value::as_array)
+        .map(|l| {
+            l.iter()
+                .filter_map(|e| e.get("command").and_then(Value::as_str))
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Every command written is an absolute path to a binary that is actually there.
@@ -372,5 +393,286 @@ fn the_plugin_and_the_installer_wire_the_same_events() {
             .and_then(Value::as_bool),
         Some(true),
         "{plugin}"
+    );
+}
+
+/// Hermes keeps hooks in `~/.hermes/config.yaml`, which is the file its whole
+/// setup lives in -- models, gateway, everything. So the rule that already holds
+/// for JSON has more riding on it here: what this does not understand, it leaves
+/// exactly where it found it.
+#[test]
+fn hermes_merges_into_yaml_it_did_not_write() {
+    let s = Sandbox::new();
+    std::fs::create_dir_all(s.home.join(".hermes")).unwrap();
+    std::fs::write(
+        s.home.join(".hermes/config.yaml"),
+        "model: hermes-4\nhooks:\n  post_tool_call:\n  - command: /usr/local/bin/format.sh\n    matcher: write_file\n",
+    )
+    .unwrap();
+
+    s.install("hermes", &[]);
+    let v = s.yaml(".hermes/config.yaml");
+
+    assert_eq!(v.get("model").and_then(Value::as_str), Some("hermes-4"));
+    assert_eq!(
+        commands(&v, "post_tool_call"),
+        vec!["/usr/local/bin/format.sh"],
+        "somebody else's hook, on an event this never touches: {v:?}"
+    );
+    assert_eq!(
+        v.pointer("/hooks/post_tool_call/0/matcher")
+            .and_then(Value::as_str),
+        Some("write_file"),
+        "including the fields this does not write itself"
+    );
+    let ours = commands(&v, "pre_llm_call");
+    assert_eq!(ours.len(), 2, "introduce and recall: {ours:?}");
+    assert!(ours[0].contains("hook context"), "{ours:?}");
+    assert!(ours[1].contains("hook recall"), "{ours:?}");
+}
+
+/// The same idempotence every other harness gets, through a different parser. A
+/// duplicated hook answers the same turn twice and is paid for twice.
+#[test]
+fn installing_hermes_twice_leaves_one_hook() {
+    let s = Sandbox::new();
+    s.install("hermes", &[]);
+    let once = commands(&s.yaml(".hermes/config.yaml"), "pre_llm_call");
+    s.install("hermes", &[]);
+    let twice = commands(&s.yaml(".hermes/config.yaml"), "pre_llm_call");
+    assert_eq!(once, twice);
+}
+
+/// A config file this cannot parse is somebody's config file. Refusing is the
+/// only safe answer: the alternative is a valid YAML file where their setup used
+/// to be.
+#[test]
+fn an_unparseable_hermes_config_is_refused_not_overwritten() {
+    let s = Sandbox::new();
+    std::fs::create_dir_all(s.home.join(".hermes")).unwrap();
+    let path = s.home.join(".hermes/config.yaml");
+    let before = "model: [unclosed\n  - :::\n";
+    std::fs::write(&path, before).unwrap();
+
+    let out = Command::cargo_bin("brain")
+        .unwrap()
+        .env("HOME", &s.home)
+        .args(["hook", "install", "hermes"])
+        .output()
+        .unwrap();
+
+    assert!(!out.status.success(), "it refuses");
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        before,
+        "and it changed nothing"
+    );
+}
+
+/// Hermes counts seconds and clamps anything over five minutes with a warning.
+/// A timeout copied across from a harness that counts milliseconds is how that
+/// warning gets earned.
+#[test]
+fn hermes_timeouts_are_seconds_under_its_cap() {
+    let s = Sandbox::new();
+    s.install("hermes", &[]);
+    let v = s.yaml(".hermes/config.yaml");
+    let timeouts: Vec<u64> = v["hooks"]["pre_llm_call"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|e| e.get("timeout").and_then(Value::as_u64))
+        .collect();
+    assert_eq!(timeouts.len(), 2, "{v:?}");
+    for t in timeouts {
+        assert!((1..=300).contains(&t), "seconds, under the cap: {t}");
+    }
+}
+
+/// Hermes asks the person before it runs a hook it has not seen before, and a
+/// hook awaiting consent is a hook that does nothing. That is not a failure this
+/// can detect afterwards -- it looks exactly like a brain with nothing to say --
+/// so it is said in advance.
+#[test]
+fn the_hermes_caveat_names_the_consent_gate() {
+    let s = Sandbox::new();
+    let out = s.install("hermes", &[]);
+    assert!(out.contains("still to do"), "{out}");
+    assert!(
+        out.contains("hooks_auto_accept") || out.contains("HERMES_ACCEPT_HOOKS"),
+        "it names the way through the gate: {out}"
+    );
+}
+
+/// The file somebody copies by hand and the file this writes have to wire the
+/// same events, for the same reason the plugin and the installer do: two ways of
+/// installing that disagree means one of them is wrong and neither says so.
+#[test]
+fn the_reference_config_and_the_installer_wire_the_same_events() {
+    let s = Sandbox::new();
+    s.install("hermes", &[]);
+    let installed = s.yaml(".hermes/config.yaml");
+
+    let reference: Value = serde_yaml_ng::from_str(
+        &std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("hooks/hermes/config.yaml"),
+        )
+        .expect("the reference config"),
+    )
+    .expect("valid YAML");
+
+    let events = |v: &Value| -> Vec<String> {
+        let mut e: Vec<String> = v["hooks"]
+            .as_object()
+            .expect("a hooks mapping")
+            .keys()
+            .cloned()
+            .collect();
+        e.sort();
+        e
+    };
+    assert_eq!(events(&installed), events(&reference));
+
+    // And the same subcommands, in the same order: the introduction is only
+    // worth anything on the turn it is first.
+    let subcommand = |c: &str| -> String {
+        c.split_once(" hook ")
+            .map(|(_, rest)| rest.to_string())
+            .unwrap_or_default()
+    };
+    assert_eq!(
+        commands(&installed, "pre_llm_call")
+            .iter()
+            .map(|c| subcommand(c))
+            .collect::<Vec<_>>(),
+        commands(&reference, "pre_llm_call")
+            .iter()
+            .map(|c| subcommand(c))
+            .collect::<Vec<_>>(),
+    );
+}
+
+/// `--project` scopes a config to one directory, and Hermes has no directory to
+/// scope it to: one user-level file holds its models, its gateway and its hooks.
+/// Writing `<project>/.hermes/config.yaml` would succeed, be read by nobody, and
+/// look exactly like a brain with nothing to say -- so this refuses instead, and
+/// says which flag to drop.
+#[test]
+fn hermes_has_no_project_scope_and_says_so() {
+    let s = Sandbox::new();
+    let out = Command::cargo_bin("brain")
+        .unwrap()
+        .env("HOME", &s.home)
+        .current_dir(&s.home)
+        .args(["hook", "install", "hermes", "--project"])
+        .output()
+        .unwrap();
+
+    assert!(!out.status.success(), "it refuses");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("--project"),
+        "it names the flag to drop: {err}"
+    );
+    assert!(
+        !s.home.join(".hermes/config.yaml").exists(),
+        "and wrote nothing"
+    );
+}
+
+/// OpenClaw loads plugins as directories with a manifest, not as an entry in
+/// somebody's config file, so there is nothing to merge here -- three files,
+/// named exactly, or the runtime does not see a plugin at all.
+#[test]
+fn openclaw_gets_a_plugin_directory_not_a_config() {
+    let s = Sandbox::new();
+    s.install("openclaw", &[]);
+
+    let dir = s.home.join(".openclaw/plugins/claudinio-brain");
+    for name in ["package.json", "openclaw.plugin.json", "index.ts"] {
+        let f = dir.join(name);
+        assert!(f.exists(), "{name} is there");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mode = std::fs::metadata(&f).unwrap().permissions().mode();
+            assert_eq!(mode & 0o111, 0, "{name} is read, not run");
+        }
+    }
+
+    // The manifest is what points the runtime at the entry point; a plugin whose
+    // package.json does not name it loads as nothing.
+    let pkg: Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.join("package.json")).unwrap()).unwrap();
+    assert_eq!(
+        pkg.pointer("/openclaw/extensions/0")
+            .and_then(Value::as_str),
+        Some("./index.ts"),
+        "{pkg}"
+    );
+}
+
+/// The same idempotence the config-file harnesses get. A plugin directory cannot
+/// grow a second copy of itself, but it can go stale, and the second install has
+/// to be the one that wins.
+#[test]
+fn installing_openclaw_twice_rewrites_the_same_files() {
+    let s = Sandbox::new();
+    s.install("openclaw", &[]);
+    let dir = s.home.join(".openclaw/plugins/claudinio-brain");
+    std::fs::write(dir.join("index.ts"), "// stale").unwrap();
+
+    s.install("openclaw", &[]);
+    let entry = std::fs::read_to_string(dir.join("index.ts")).unwrap();
+    assert!(entry.contains("before_prompt_build"), "it was rewritten");
+    assert_eq!(
+        std::fs::read_dir(&dir).unwrap().count(),
+        3,
+        "and no fourth file appeared"
+    );
+}
+
+/// Writing the files is not installing the plugin here: OpenClaw registers a
+/// plugin through its own command and gates conversation hooks behind a config
+/// flag. Both are steps this deliberately does not take for somebody, so both
+/// have to be said -- a plugin sitting unregistered on disk is indistinguishable
+/// from a brain with nothing to say.
+#[test]
+fn the_openclaw_caveat_names_what_is_left_to_do() {
+    let s = Sandbox::new();
+    let out = s.install("openclaw", &[]);
+    assert!(out.contains("still to do"), "{out}");
+    assert!(
+        out.contains("openclaw plugins install"),
+        "it names the command: {out}"
+    );
+    assert!(
+        out.contains("allowConversationAccess"),
+        "and the flag: {out}"
+    );
+}
+
+/// The rule the shell hooks are held to, checked on the one entry here that is
+/// code rather than configuration: no failure reaches the prompt, and the prompt
+/// crosses as an argument rather than through a shell.
+#[test]
+fn the_openclaw_plugin_never_lets_a_failure_reach_the_prompt() {
+    let entry = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("hooks/openclaw/index.ts"),
+    )
+    .expect("the plugin entry");
+
+    assert!(entry.contains("catch"), "every failure is caught: {entry}");
+    assert!(
+        entry.contains("--format") && entry.contains("text"),
+        "it asks for the answer without an envelope"
+    );
+    assert!(
+        entry.contains("--prompt"),
+        "the prompt is an argument, not a shell string"
+    );
+    assert!(
+        entry.contains("prependContext"),
+        "and it answers in the field OpenClaw reads"
     );
 }

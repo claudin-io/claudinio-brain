@@ -1,0 +1,7 @@
+{
+  "id": "claudinio-brain",
+  "name": "Claudinio Brain",
+  "description": "Bitemporal memory for a project: what it already knows is read before the model plans, so the agent does not have to decide to ask.",
+  "homepage": "https://github.com/claudin-io/claudinio-brain",
+  "license": "MIT"
+}
