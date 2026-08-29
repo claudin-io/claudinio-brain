@@ -1,6 +1,6 @@
 [package]
 name = "brain"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 # Measured, not inherited. `cargo metadata` reports 1.88 as the highest floor any
 # dependency *declares* (schemars -> darling 0.23), but libsqlite3-sys 0.38.1 uses
