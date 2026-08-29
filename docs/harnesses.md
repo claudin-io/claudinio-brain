@@ -76,7 +76,9 @@ says so instead of leaving it out.
 | **Cline** | ✅ | ✅ | ✅ | ❌ *see below* | [`hooks/cline/`](../hooks/cline/) |
 | **Codex** | ✅ | ✅ | ✅ | ⏳ *see below* | [`hooks/codex/hooks.json`](../hooks/codex/hooks.json) |
 | **Gemini CLI** | ⚠️ *see below* | ✅ *on `BeforeAgent`* | ❌ | ⏳ *see below* | [`hooks/gemini/settings.json`](../hooks/gemini/settings.json) |
+| **Hermes** | ✅ *first turn only* | ✅ *on `pre_llm_call`* | ❌ | ⏳ *see below* | [`hooks/hermes/config.yaml`](../hooks/hermes/config.yaml) |
 | **OpenCode** | ❌ | ✅ | ❌ | ❌ | [`hooks/opencode/brain.js`](../hooks/opencode/brain.js) |
+| **OpenClaw** | ❌ *see below* | ✅ *on `before_prompt_build`* | ❌ | ❌ | [`hooks/openclaw/`](../hooks/openclaw/) |
 | **Kilo Code** | ❌ | ✅ | ❌ | ❌ | the same plugin |
 | **Cursor** | ✅ | ❌ *see below* | ❌ | ❌ | [`hooks/cursor/hooks.json`](../hooks/cursor/hooks.json) |
 | **Augment** | ✅ | ❌ *see below* | ❌ | ⏳ *see below* | [`hooks/augment/settings.json`](../hooks/augment/settings.json) |
@@ -167,6 +169,81 @@ read here, so the row stays empty rather than guessing.
 The row is left in because the schema accepts it and it may be fixed in the
 version you are running; `BeforeAgent` carries the weight either way.
 
+### Hermes
+
+Hermes takes shell hooks, declared under `hooks:` in `~/.hermes/config.yaml`,
+with the same stdin contract everyone else here uses: JSON on stdin carrying
+`hook_event_name`, JSON back on stdout. It also accepts Claude Code's
+`decision`/`reason` for blocking a tool call, which nothing here emits — that is
+a gate, and a memory that could veto a tool call would be a different tool.
+
+**One event injects.** `pre_llm_call` reads a flat `context` back and appends it
+to the current turn's user message. Everything else observes: `on_session_start`
+fires, and its return value is documented as ignored. So there is nowhere to
+attach an introduction — unless the introduction attaches to the per-turn event
+and works out for itself which turn is the first, which is what it does.
+`extra.is_first_turn` is in the payload and states it outright, so `hook context`
+returns the introduction on the first turn and nothing on every turn after. That
+is the same judgement `source: resume` already makes on Claude Code, one harness
+over: not every prompt that *can* carry an introduction is a session starting.
+
+**The prompt is `user_message`**, at the top level, where the other harnesses put
+`prompt`. One field name in one schema, and getting it wrong is free of any
+visible symptom: the hook installs, runs on every turn and answers `{}` forever.
+
+**Its config is YAML, and the file is not ours.** Models, gateway and hooks all
+live in `~/.hermes/config.yaml`, so the installer merges into it, refuses what it
+cannot parse, and leaves every key and every hook it did not write exactly where
+it found them — including the `matcher` and `fail_closed` fields it never writes
+itself. What does not survive a parse-and-reserialise is comments, and the
+installer says so rather than letting somebody discover it.
+
+**`--project` is refused.** Hermes documents no project-level config, so a
+`<project>/.hermes/config.yaml` would be written successfully and read by nobody.
+
+**Consent is a gate, and a gate is a silence.** Hermes asks before it runs a hook
+it has not seen, so the first session after installing shows a prompt and the
+hooks do nothing until it is answered. `hooks_auto_accept: true` in the same
+file, or `HERMES_ACCEPT_HOOKS=1`, skips it.
+
+**No flush.** Hermes has no pre-compaction event to attach one to.
+
+**Capture is not wired yet.** `on_session_end` exists, and `subagent_stop`
+besides. What has not been read here is the transcript those point at — the same
+reason Codex, Gemini and Augment have an hourglass in that column.
+
+### OpenClaw
+
+No command hooks at all: OpenClaw's plugins are in-process TypeScript, registered
+through `api.on(...)` from a plugin directory with a manifest. So this is the
+second entry here that is code rather than configuration, and it works the way
+the OpenCode one does — the prompt crosses to `brain` as `--prompt`, the
+subprocess is spawned from an argument array rather than a shell string, and
+every failure path leaves the turn exactly as it was.
+
+`before_prompt_build` is the only hook used, because it is the only one that can
+add anything: it returns `prependContext` (among `appendContext`, `systemPrompt`
+and others) and gets `event.cleanedBody` or `event.prompt` to work from.
+`session_start` and `session_end` are classified as observers there too, so there
+is no introduction and no flush.
+
+**Two steps stay yours.** OpenClaw adopts a plugin through its own command rather
+than by finding a directory, and it gates conversation hooks behind a flag, so
+`brain hook install openclaw` writes the three files and then prints both:
+
+```console
+openclaw plugins install --link ~/.openclaw/plugins/claudinio-brain
+```
+
+```json
+{"plugins": {"entries": {"claudinio-brain": {
+  "enabled": true, "hooks": {"allowConversationAccess": true}}}}}
+```
+
+Like OpenCode and Kilo, this one has not been run end to end — no OpenClaw
+install was available — and the contract it is written against was read from the
+published hook reference.
+
 ### Cursor
 
 Cursor's `beforeSubmitPrompt` is a **gate**, not an injector: it can permit or
@@ -253,3 +330,15 @@ nothing — which looks exactly like a brain with nothing to say.
 
 If you want a harness added, the three things needed are its event names, the
 shape it puts on stdin, and the exact field it reads context back from.
+
+## Agents and frameworks with no hook surface
+
+Some agents have no lifecycle hooks to install into at all. NanoClaw runs the
+Claude Agent SDK inside containers and is customised by forking it; CrewAI,
+LangChain, LangGraph, AutoGen, the OpenAI Agents SDK, Google ADK and Pydantic AI
+are libraries whose extension points are in-process Python callbacks, not
+subprocesses a config file can name.
+
+They are not out of reach — they are reached differently, through MCP and through
+a callback that shells out. [docs/frameworks.md](frameworks.md) has a recipe for
+each, and says plainly which parts are wired by hand rather than verified here.

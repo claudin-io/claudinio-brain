@@ -674,7 +674,7 @@ not anyone thought to ask. On Claude Code that is a plugin install:
 /plugin install claudinio-brain@claudin-io
 ```
 
-Seven other harnesses are wired up in [`hooks/`](hooks/), with the table below
+Nine other harnesses are wired up in [`hooks/`](hooks/), with the table below
 saying what each one can actually do.
 
 | event | what it does |
@@ -745,7 +745,7 @@ capture would record before wiring anything:
 brain hook capture --transcript ~/.claude/projects/<project>/<session>.jsonl --dry-run
 ```
 
-Eight harnesses have configuration here, and the table in
+Ten harnesses have configuration here, and the table in
 [docs/harnesses.md](docs/harnesses.md) says what each one can actually do rather
 than what it would be nice for it to do:
 
@@ -755,7 +755,9 @@ than what it would be nice for it to do:
 | Cline | ✅ | ✅ | ✅ | ❌ it hands over no transcript |
 | Codex | ✅ | ✅ | ✅ | ⏳ transcript format unverified |
 | Gemini CLI | ⚠️ open upstream bug | ✅ on `BeforeAgent` | ❌ | ⏳ transcript format unverified |
+| Hermes | ✅ first turn only | ✅ on `pre_llm_call` | ❌ no compaction event | ⏳ transcript format unverified |
 | OpenCode, Kilo Code | ❌ | ✅ | ❌ no lifecycle hook to attach to | ❌ |
+| OpenClaw | ❌ its session hooks only observe | ✅ on `before_prompt_build` | ❌ | ❌ |
 | Cursor | ✅ | ❌ its prompt hook is a gate, not an injector | ❌ | ❌ |
 | Augment | ✅ | ❌ it has no `UserPromptSubmit` | ❌ | ⏳ transcript format unverified |
 
@@ -793,6 +795,12 @@ exactly like a brain with nothing to say.
 For a harness that speaks MCP, `brain serve` needs none of this and works today.
 But a tool the agent has to *choose* to call is the failure the hook exists to
 fix, so the two are not substitutes.
+
+Frameworks — CrewAI, LangChain, LangGraph, AutoGen, the OpenAI Agents SDK, Google
+ADK, Pydantic AI, and NanoClaw — have no lifecycle to install into, because you
+write the loop rather than attaching to one. They get the same two halves through
+a callback instead: [docs/frameworks.md](docs/frameworks.md) has a recipe each,
+and [`python/`](python/) packages them.
 
 ## Using it from an agent
 
