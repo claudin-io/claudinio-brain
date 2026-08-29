@@ -1,6 +1,6 @@
 [package]
 name = "brain"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 # Measured, not inherited. `cargo metadata` reports 1.88 as the highest floor any
 # dependency *declares* (schemars -> darling 0.23), but libsqlite3-sys 0.38.1 uses
@@ -79,10 +79,18 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v4", "v7", "serde"] }
 directories = "6"
 toml = "1.1"
+# Hermes keeps its hooks in the YAML file it keeps everything else in, so
+# installing there means merging rather than writing. `serde_yaml` was archived
+# by its author in 2024; this is the maintained continuation of it, same API.
+# The cost is stated in the installer's caveat rather than hidden: a round-trip
+# through any serde YAML parser keeps the data and drops the comments.
+serde_yaml_ng = "0.10"
 unicode-normalization = "0.1.25"
 
 [dev-dependencies]
 insta = { version = "1", features = ["json"] }
+# The install tests read back what was written, in the harness's own format.
+serde_yaml_ng = "0.10"
 proptest = "1"
 tempfile = "3"
 assert_cmd = "2"

@@ -1,0 +1,10 @@
+{
+  "name": "claudinio-brain",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Read the project's brain on every turn, without being asked.",
+  "type": "module",
+  "openclaw": {
+    "extensions": ["./index.ts"]
+  }
+}

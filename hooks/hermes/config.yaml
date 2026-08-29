@@ -1,0 +1,19 @@
+# claudinio-brain -- read the project's brain on every turn, without being asked.
+#
+# Merge this `hooks:` block into ~/.hermes/config.yaml and replace the
+# placeholder path. `brain hook install hermes` does the same thing without the
+# hand-editing, and writes the real path of the binary it was run from.
+#
+# Both hooks are on `pre_llm_call` because that is the only event Hermes injects
+# on: `on_session_start` fires, but its return value is ignored. So the
+# introduction rides on the per-turn event and returns nothing after the first
+# turn, which it reads from `extra.is_first_turn` rather than counting.
+#
+# Hermes asks before running a hook it has not seen. Approve them once, or set
+# `hooks_auto_accept: true` here.
+hooks:
+  pre_llm_call:
+    - command: "/ABSOLUTE/PATH/TO/brain hook context --format hermes"
+      timeout: 15
+    - command: "/ABSOLUTE/PATH/TO/brain hook recall --format hermes"
+      timeout: 10

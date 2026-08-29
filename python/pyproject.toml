@@ -1,0 +1,38 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "claudinio-brain-hooks"
+version = "0.1.0"
+description = "Read a project's brain from inside an agent loop you wrote yourself."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.9"
+keywords = ["memory", "agents", "langchain", "langgraph", "crewai", "knowledge-graph"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Topic :: Software Development :: Libraries",
+]
+# No dependencies, and not by accident. Everything this package does is spawn one
+# process; the frameworks it adapts to are matched by shape rather than by
+# import, so none of them is pinned here and none of them can break an upgrade.
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/claudin-io/claudinio-brain"
+Documentation = "https://github.com/claudin-io/claudinio-brain/blob/main/docs/frameworks.md"
+Source = "https://github.com/claudin-io/claudinio-brain"
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/claudinio_brain_hooks"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

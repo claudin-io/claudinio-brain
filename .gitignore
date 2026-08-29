@@ -9,3 +9,13 @@
 # The f32 table is the download; only the int8 quantization is compiled in.
 # 30 MB of redundant weights has no business in the history.
 models/**/model.safetensors
+
+# The pip package's build and test scratch. `python -m build` produces the two
+# artefacts a release uploads; neither belongs in the history.
+/python/dist/
+__pycache__/
+.pytest_cache/
+
+# macOS and editor-tool scratch. Neither is anybody else's business.
+.DS_Store
+/.serena/
