@@ -6,7 +6,10 @@
           {
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/hooks/brain-hook.sh",
-            "args": ["context"],
+            "args": [
+              "context",
+              "text"
+            ],
             "timeout": 15,
             "statusMessage": "Reading this project's brain"
           }
@@ -19,7 +22,9 @@
           {
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/hooks/brain-hook.sh",
-            "args": ["recall"],
+            "args": [
+              "recall"
+            ],
             "timeout": 10,
             "statusMessage": "Asking the brain"
           }
@@ -32,9 +37,42 @@
           {
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/hooks/brain-hook.sh",
-            "args": ["flush"],
+            "args": [
+              "flush"
+            ],
             "timeout": 10,
             "statusMessage": "Asking for anything worth keeping"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/brain-hook.sh",
+            "args": [
+              "capture"
+            ],
+            "timeout": 60,
+            "statusMessage": "Recording what this session did",
+            "async": true
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/brain-hook.sh",
+            "args": [
+              "capture"
+            ],
+            "timeout": 60,
+            "statusMessage": "Recording what this session did"
           }
         ]
       }

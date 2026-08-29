@@ -7,9 +7,62 @@ works, today, with no configuration in this repository — Zed, VS Code Copilot,
 Claude Desktop and everything else that speaks the protocol.
 
 **Hooks** (`brain hook`) make the brain something the agent reads *without
-deciding to*. That is the whole point: a memory an agent has to choose to consult
-answers the questions somebody already suspected it could answer. Hooks need
-per-harness configuration, because every harness invented its own.
+deciding to*, and something that remembers a session *without being asked to*.
+That is the whole point: a memory an agent has to choose to consult answers the
+questions somebody already suspected it could answer, and a session nobody wrote
+down is a session the next one starts without. Hooks need per-harness
+configuration, because every harness invented its own.
+
+There are four, and the fourth is different from the other three:
+
+| subcommand | when | what it does |
+|---|---|---|
+| `hook context` | session start | says what this brain is, and what the last session did |
+| `hook recall` | every prompt | answers the prompt from what the brain already holds |
+| `hook flush` | before compaction | asks the model to write down what the session *learned* |
+| `hook capture` | end of turn, end of session | records what the session *did*, from the transcript, with no model |
+
+The first three read and never write. `capture` writes, and what makes that safe
+is that it only ever writes about the session itself — subject `session/<id>`,
+scope `sessions`, six predicates (`worked_on`, `edited`, `ran`, `branch`,
+`harness`, `concluded`) — so it cannot contradict a value a person recorded. It
+never fails, never blocks and prints nothing, exactly like the other three. Run
+it by hand against a transcript with `brain hook capture --transcript <path>
+--dry-run`.
+
+`brain hook context` reads those back at the start of the next session, so an
+agent is told what it was doing last time rather than having to think to go
+looking. `--not-scope sessions`, or `BRAIN_HOOK_NOT_SCOPE=sessions`, leaves them
+out of per-prompt recall if you would rather they stayed out of the way.
+
+## Installing
+
+```console
+$ brain hook install claude-code
+created /home/you/.claude/settings.json
+claude-code is wired up
+
+still to do:
+The plugin is the maintained path here (`/plugin install claudinio-brain@claudin-io`);
+this writes the same hooks into settings.json by hand instead.
+```
+
+`--project` scopes it to this directory instead of every project; `--dry-run`
+prints what it would write and writes nothing.
+
+It writes the absolute path of the running binary, so there is no placeholder to
+forget. It **merges** into whatever is already in the file — other people's hooks,
+other events, unrelated keys all survive — and it replaces its own previous entry
+rather than adding a second one, so installing twice leaves one hook. A config
+file it cannot parse is refused rather than overwritten.
+
+What it will not do is switch on a harness's feature flags. Those are printed as
+"still to do" instead: turning on somebody's settings is a larger claim on their
+machine than writing the file they asked for, and a step you perform yourself is
+a step you know happened.
+
+The files under `hooks/` are the same configuration for hand-installing, with an
+`/ABSOLUTE/PATH/TO/brain` placeholder to replace.
 
 ## What is verified here
 
@@ -17,17 +70,42 @@ The table says what was checked against a published schema or the harness's own
 source, not what is likely to work. Where a harness cannot do something, the row
 says so instead of leaving it out.
 
-| harness | introduce | recall (per prompt) | flush | how |
-|---|---|---|---|---|
-| **Claude Code** | ✅ | ✅ | ✅ | [`hooks/hooks.json`](../hooks/hooks.json), or the plugin |
-| **Cline** | ✅ | ✅ | ✅ | [`hooks/cline/`](../hooks/cline/) |
-| **Codex** | ✅ | ✅ | ❌ *see below* | [`hooks/codex/hooks.json`](../hooks/codex/hooks.json) |
-| **Gemini CLI** | ⚠️ *see below* | ✅ | ❌ | [`hooks/gemini/settings.json`](../hooks/gemini/settings.json) |
-| **OpenCode** | ❌ | ✅ | ❌ | [`hooks/opencode/brain.js`](../hooks/opencode/brain.js) |
-| **Kilo Code** | ❌ | ✅ | ❌ | the same plugin |
-| **Cursor** | ✅ | ❌ *see below* | ❌ | [`hooks/cursor/hooks.json`](../hooks/cursor/hooks.json) |
-| **Augment** | ✅ | ❌ *see below* | ❌ | [`hooks/augment/settings.json`](../hooks/augment/settings.json) |
-| anything else | — | — | — | `--format text`, wired by hand |
+| harness | introduce | recall (per prompt) | flush | capture | how |
+|---|---|---|---|---|---|
+| **Claude Code** | ✅ | ✅ | ✅ | ✅ *`Stop` + `SessionEnd`* | [`hooks/hooks.json`](../hooks/hooks.json), or the plugin |
+| **Cline** | ✅ | ✅ | ✅ | ❌ *see below* | [`hooks/cline/`](../hooks/cline/) |
+| **Codex** | ✅ | ✅ | ✅ | ⏳ *see below* | [`hooks/codex/hooks.json`](../hooks/codex/hooks.json) |
+| **Gemini CLI** | ⚠️ *see below* | ✅ *on `BeforeAgent`* | ❌ | ⏳ *see below* | [`hooks/gemini/settings.json`](../hooks/gemini/settings.json) |
+| **OpenCode** | ❌ | ✅ | ❌ | ❌ | [`hooks/opencode/brain.js`](../hooks/opencode/brain.js) |
+| **Kilo Code** | ❌ | ✅ | ❌ | ❌ | the same plugin |
+| **Cursor** | ✅ | ❌ *see below* | ❌ | ❌ | [`hooks/cursor/hooks.json`](../hooks/cursor/hooks.json) |
+| **Augment** | ✅ | ❌ *see below* | ❌ | ⏳ *see below* | [`hooks/augment/settings.json`](../hooks/augment/settings.json) |
+| anything else | — | — | — | — | `--format text`, wired by hand |
+
+⏳ means the events exist and the transcript format has not been verified here.
+Capture reads a harness's own transcript file, and a dialect nobody checked is
+exactly the quiet failure the rest of this page exists to avoid — so those rows
+stay empty until somebody has read the file.
+
+### Claude Code
+
+All four, and capture is wired to **both** `Stop` and `SessionEnd`.
+
+`Stop` fires when a turn finishes, so the record survives a session that is
+killed or crashes and never reaches `SessionEnd`. It is installed with
+`"async": true`: it runs between the user's turns, and a hook that makes somebody
+wait is a hook they uninstall.
+
+`SessionEnd` is the last and most complete look at the transcript. Its `timeout`
+is load-bearing rather than decorative — hooks on that event share a second and a
+half unless one of them asks for longer, and a hook killed on its timeout has its
+work discarded — so it is installed with `"timeout": 60`.
+
+`SessionStart` is installed with `--format text` rather than the JSON envelope.
+Claude Code guarantees that a session-start hook's plain stdout reaches the
+context; whether it also unwraps `additionalContext` there is no longer
+documented, and an envelope that stops being unwrapped does not fail — it arrives
+as its own source code, which is worse than not arriving.
 
 ### Codex
 
@@ -36,33 +114,58 @@ literally named `ClaudeHooksEngine` — so the default `--format claude` is alre
 its format. Input arrives as `snake_case` JSON with `prompt` and
 `hook_event_name`; output is read back as `hookSpecificOutput.additionalContext`.
 
-Hooks are opt-in. In `~/.codex/config.toml`:
+Hooks are on by default now. They used to be gated behind
+`[features] codex_hooks = true` in `~/.codex/config.toml`, and the installer used
+to print that as a "still to do"; it no longer does, because a step that has no
+effect costs more than saying nothing — somebody performs it, sees nothing
+change, and stops trusting the rest of the message. `[features] hooks = false`
+turns them off.
 
-```toml
-[features]
-codex_hooks = true
-```
-
-Then copy `hooks/codex/hooks.json` to `~/.codex/hooks.json` and replace the
+Copy `hooks/codex/hooks.json` to `~/.codex/hooks.json` and replace the
 placeholder path.
 
-**Why no flush.** `PreCompactCommandOutputWire` in the Codex source carries only
-the universal fields and is `deny_unknown_fields`, so a `hookSpecificOutput` sent
-on `PreCompact` is rejected rather than ignored. Wiring flush there would make
-Codex complain on every compaction and inject nothing. `SessionStart` and
-`UserPromptSubmit` both accept context, and those are what the config uses.
+**Flush works now.** It used to be impossible: `PreCompactCommandOutputWire`
+carried only the universal fields and was `deny_unknown_fields`, so a
+`hookSpecificOutput` sent on `PreCompact` was rejected rather than ignored. Codex
+documents the shared output contract on `PreCompact` today, and the config wires
+flush there.
+
+**Capture is not wired yet.** Codex has `Stop` (with `last_assistant_message`)
+and `SessionEnd`, and passes a `transcript_path`. What has not been checked here
+is what that file contains — capture parses a transcript rather than a hook
+payload, and a dialect nobody read is a hook that installs cleanly and records
+nothing.
 
 ### Gemini CLI
 
 Same `hookSpecificOutput.additionalContext` shape, configured under `hooks` in
-`settings.json`.
+`~/.gemini/settings.json` or `<project>/.gemini/settings.json`.
 
-**The warning on SessionStart.** Gemini CLI has an open upstream issue reporting
-that `SessionStart` does not actually inject `additionalContext`
+**Its events are its own.** Gemini has no `UserPromptSubmit`. The event that
+fires after a prompt is submitted and before the agent plans — the one place it
+takes context for a turn — is **`BeforeAgent`**, and that is what recall attaches
+to. Its full lifecycle set is `BeforeTool`, `AfterTool`, `BeforeAgent`,
+`AfterAgent`, `BeforeModel`, `BeforeToolSelection`, `AfterModel`, `SessionStart`,
+`SessionEnd`, `Notification`, `PreCompress`.
+
+**Timeouts are milliseconds here**, where Claude Code and Codex count seconds.
+Same field name, three orders of magnitude apart; a `15` copied across from
+another harness is a hook that always times out.
+
+**No flush.** `PreCompress` is advisory and returns only `systemMessage`, which
+is shown to the user rather than given to the model.
+
+**Capture is not wired yet.** `SessionEnd` here is non-blocking, ignores
+flow-control fields and injects nothing — which is precisely the shape a capture
+hook wants, since it writes to the brain rather than to the session. Gemini also
+passes `transcript_path` on *every* event. The format of that file has not been
+read here, so the row stays empty rather than guessing.
+
+**The warning on SessionStart.** There is an open upstream issue reporting that
+`SessionStart` does not actually inject `additionalContext`
 ([google-gemini/gemini-cli#15413](https://github.com/google-gemini/gemini-cli/issues/15413)).
-The row is left in because the schema accepts it and the behaviour may already
-have been fixed in the version you are running; `UserPromptSubmit` is the one
-that carries the weight either way.
+The row is left in because the schema accepts it and it may be fixed in the
+version you are running; `BeforeAgent` carries the weight either way.
 
 ### Cursor
 
@@ -83,6 +186,9 @@ keep their names and stay executable. Copy them *and* `hooks/brain-hook.sh` into
 `.clinerules/hooks/` (this workspace) or `~/Documents/Cline/Hooks/` (all of them),
 then tick "Enable Hooks" in Cline's Feature Settings. macOS and Linux only, which
 is Cline's limitation rather than this one.
+
+**No capture.** Cline's three events carry the prompt and not a path to a
+transcript, and capture reads a transcript. There is nothing to point it at.
 
 Two details differ from everyone else, and both are handled by `--format cline`:
 the prompt arrives nested at `userPromptSubmit.prompt` rather than at the top
@@ -108,6 +214,11 @@ context, so there is nothing to attach the introduction or the flush to.
 Kilo has an [open request](https://github.com/Kilo-Org/kilocode/issues/5827) for
 session lifecycle hooks; if it lands, the other two become possible.
 
+OpenCode's plugin API has grown `session.created`, `session.idle`,
+`session.compacted` and an experimental `session.compacting` since this plugin
+was written, which are the shapes introduce, capture and flush would attach to.
+None of them is wired here yet.
+
 This is the one entry here that is code rather than configuration, and it is the
 one that has not been run end to end — no OpenCode or Kilo install was available.
 The contract it is written against was read from the plugin type definitions in
@@ -123,6 +234,10 @@ Code, Codex and Gemini CLI use, from a `hooks` block in
 It has `SessionStart`, `PreToolUse`, `PostToolUse`, `Stop` and `SessionEnd` — and
 **no `UserPromptSubmit`**. So, like Cursor, Augment gets the introduction and
 nothing per-prompt. `SessionEnd` cannot inject, so there is no flush either.
+
+`Stop` and `SessionEnd` both exist, so capture is possible in principle; as with
+Codex and Gemini, what is missing is somebody having read the transcript file it
+would parse.
 
 ## Everything else
 

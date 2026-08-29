@@ -679,20 +679,32 @@ saying what each one can actually do.
 
 | event | what it does |
 |---|---|
-| **SessionStart** | says what this brain is: its label, what it holds, and the predicates it has learned. Counts and vocabulary, because "you have memory" is not something an agent can act on. |
+| **SessionStart** | says what this brain is: its label, what it holds, the predicates it has learned, and what the last session here worked on. Counts and vocabulary, because "you have memory" is not something an agent can act on. |
 | **UserPromptSubmit** | answers the prompt from the brain before the model sees it, and says how old each answer is. |
 | **PreCompact** | asks for anything learned this session that is worth more than one session, in one `remember --batch`, while the transcript is still readable. |
+| **Stop, SessionEnd** | records what this session *did* — what it was asked for, which files it changed, what it ran, how it ended — from the harness's own transcript, with no model involved. |
 
 What makes reading-on-every-prompt affordable is the rest of this project: no
 server to reach, no embedding endpoint to call, no model on the read path. A
 design that had to make an API call per prompt would have to be selective about
 it, and selective is the failure being fixed.
 
-Three rules, because this is code nobody is watching:
+Four rules, because this is code nobody is watching:
 
-- **It never writes.** Reading is safe to do unconditionally; a brain that grew a
-  fact every time somebody typed would be a log. What the session learned still
-  goes through a deliberate `remember`, visible in the transcript.
+- **The hooks that answer never write.** Reading is safe to do unconditionally; a
+  brain that grew a fact every time somebody typed would be a log. What the
+  session *learned* still goes through a deliberate `remember`, visible in the
+  transcript, because deciding what is worth knowing is a judgement and a
+  judgement should be somebody's.
+
+  The one hook that writes is `capture`, and it is narrow enough to be safe
+  unattended: what a session *did* is not a judgement — the transcript states it
+  literally — so it is extracted with no model and recorded about
+  `session/<id>` and nothing else, in scope `sessions`, under six predicates
+  (`worked_on`, `edited`, `ran`, `branch`, `harness`, `concluded`). It cannot
+  contradict a value a person recorded because it never writes to one, and
+  capturing the same session ten times leaves one session rather than ten.
+  `--not-scope sessions` keeps the lot out of what gets injected per prompt.
 - **It never fails.** No brain in this directory, unreadable input, a question
   that found nothing — all of them print `{}` and exit 0. Most of a hook's life
   is spent in projects that never ran `brain init`, and a hook that complains
@@ -725,22 +737,45 @@ Three rules, because this is code nobody is watching:
 Both live in the environment on purpose: the settings file that installed a hook
 is usually not where the person debugging it is looking.
 
-`brain hook context | recall | flush` is the whole interface, so the same three
-answers can be wired by hand into `.claude/settings.json`.
+`brain hook context | recall | flush | capture` is the whole interface, so the
+same answers can be wired by hand into `.claude/settings.json`. To see what a
+capture would record before wiring anything:
+
+```bash
+brain hook capture --transcript ~/.claude/projects/<project>/<session>.jsonl --dry-run
+```
 
 Eight harnesses have configuration here, and the table in
 [docs/harnesses.md](docs/harnesses.md) says what each one can actually do rather
 than what it would be nice for it to do:
 
-| harness | introduce | recall per prompt | flush |
-|---|---|---|---|
-| Claude Code | ✅ | ✅ | ✅ |
-| Cline | ✅ | ✅ | ✅ |
-| Codex | ✅ | ✅ | ❌ its `PreCompact` schema rejects context |
-| Gemini CLI | ⚠️ open upstream bug | ✅ | ❌ |
-| OpenCode, Kilo Code | ❌ | ✅ | ❌ no lifecycle hook to attach to |
-| Cursor | ✅ | ❌ its prompt hook is a gate, not an injector | ❌ |
-| Augment | ✅ | ❌ it has no `UserPromptSubmit` | ❌ |
+| harness | introduce | recall per prompt | flush | capture |
+|---|---|---|---|---|
+| Claude Code | ✅ | ✅ | ✅ | ✅ |
+| Cline | ✅ | ✅ | ✅ | ❌ it hands over no transcript |
+| Codex | ✅ | ✅ | ✅ | ⏳ transcript format unverified |
+| Gemini CLI | ⚠️ open upstream bug | ✅ on `BeforeAgent` | ❌ | ⏳ transcript format unverified |
+| OpenCode, Kilo Code | ❌ | ✅ | ❌ no lifecycle hook to attach to | ❌ |
+| Cursor | ✅ | ❌ its prompt hook is a gate, not an injector | ❌ | ❌ |
+| Augment | ✅ | ❌ it has no `UserPromptSubmit` | ❌ | ⏳ transcript format unverified |
+
+⏳ is the events being there and nobody here having read the file they point at.
+Capture parses a harness's own transcript, and a dialect guessed at is exactly
+the quiet failure the rest of this section is about.
+
+Wiring one up is a command:
+
+```console
+$ brain hook install claude-code
+created /home/you/.claude/settings.json
+claude-code is wired up
+```
+
+It writes the absolute path of the running binary, so there is no placeholder to
+forget; it merges into whatever config is already there rather than replacing it;
+and installing twice leaves one hook rather than two. `--dry-run` shows the plan,
+`--project` scopes it to this directory. Feature flags a harness needs switched on
+are printed as "still to do" rather than switched on for you.
 
 Codex and Gemini CLI need no new envelope: Codex implemented Claude Code's wire
 format deliberately — its engine is named `ClaudeHooksEngine` — and Gemini CLI

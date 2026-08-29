@@ -48,6 +48,14 @@ if [ -z "$BIN" ]; then
   nothing
 fi
 
+# `capture` is the one hook that writes rather than answers, so it takes no
+# envelope: what it has to say it says to the brain. It is run for its effect and
+# then the harness is told the same nothing every other quiet hook tells it.
+if [ "$1" = "capture" ]; then
+  "$BIN" hook capture >/dev/null 2>&1 || true
+  nothing
+fi
+
 out=$("$BIN" hook "$1" --format "$FORMAT" 2>/dev/null) || out=""
 
 # `text` has no envelope to validate and is allowed to be empty -- that is how it

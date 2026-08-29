@@ -111,14 +111,17 @@ pub enum Cmd {
     Reindex,
 
     /// Answer a harness lifecycle hook, so the brain is read without anyone
-    /// having to remember to ask it.
+    /// having to remember to ask it -- or wire those hooks into a harness.
     ///
     /// Reads the harness's JSON on stdin and writes the harness's JSON on
     /// stdout. It never writes to the brain, never fails, and prints `{}` when
     /// there is nothing to say -- including in every directory that has no
     /// brain. `BRAIN_HOOK=off` in the environment turns it off without
     /// uninstalling anything.
-    Hook(HookArgs),
+    Hook {
+        #[command(subcommand)]
+        cmd: HookCmd,
+    },
 
     /// Speak MCP over stdio, so an agent can use this brain as a tool.
     #[cfg(feature = "mcp")]
@@ -220,14 +223,88 @@ pub struct RememberArgs {
     pub dry_run: bool,
 }
 
+/// What `hook` is being asked to do.
+///
+/// A subcommand rather than more flags on one command, because installing and
+/// answering are different jobs with nothing in common: one runs unattended on
+/// every prompt and must never fail, the other runs once and should say exactly
+/// what it changed. `brain hook recall` still parses the way it always did, which
+/// matters -- it is written into config files already on people's machines.
+#[derive(clap::Subcommand, Debug)]
+pub enum HookCmd {
+    /// Say what this brain is. Attach to the harness's session-start event.
+    Context(HookArgs),
+    /// Answer the prompt just typed. Attach to the prompt event.
+    Recall(HookArgs),
+    /// Ask for what the session learned, before it is lost.
+    Flush(HookArgs),
+    /// Record what this session did, from the harness's own transcript.
+    ///
+    /// The one hook that writes, and the only one that does. It reads the
+    /// transcript the harness is already keeping, extracts what happened without
+    /// a model -- what was asked for, which files changed, what was run, how it
+    /// ended -- and records it as facts about `session/<id>` in scope
+    /// `sessions`. Nothing else is ever written, so it cannot contradict a value
+    /// a person recorded.
+    ///
+    /// Safe to attach to more than one event, and meant to be: it runs at the end
+    /// of a turn and again when the session closes, always against the same
+    /// growing transcript, and the second run reasserts rather than duplicates.
+    Capture(HookCaptureArgs),
+    /// Wire these hooks into a harness's configuration.
+    ///
+    /// Writes the absolute path of this executable, merges into whatever is
+    /// already in the file, and replaces its own previous entry rather than
+    /// adding a second one. Every step of doing this by hand fails silently, which
+    /// is the only reason it is worth being code.
+    Install(HookInstallArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct HookInstallArgs {
+    /// Which harness to wire up.
+    #[arg(value_enum)]
+    pub harness: crate::install::Harness,
+
+    /// Install for this project only, instead of for every project.
+    ///
+    /// Off by default: a brain is per-directory already, and the hook answers `{}`
+    /// in every directory that has none -- so installing once, globally, is both
+    /// the cheaper setup and the one that cannot be forgotten in a new checkout.
+    #[arg(long)]
+    pub project: bool,
+
+    /// Report what would be written, and write nothing.
+    #[arg(long)]
+    pub dry_run: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct HookCaptureArgs {
+    /// The transcript to read, instead of the one the harness announced.
+    ///
+    /// For a person debugging an installation, who has a file and no harness to
+    /// send its input. The session's id then comes from the file's name, which is
+    /// where every harness that writes one puts it.
+    #[arg(long, value_name = "PATH")]
+    pub transcript: Option<PathBuf>,
+
+    /// Which harness's transcript this is, and what to record as having produced
+    /// the session.
+    ///
+    /// Stated rather than sniffed. Two harnesses can write the same field names
+    /// and mean different things by them, and a wrong guess here is a fact that
+    /// says the work happened somewhere it did not.
+    #[arg(long, value_name = "NAME", default_value = "claude-code")]
+    pub harness: String,
+
+    /// Report what would be recorded, and record nothing.
+    #[arg(long)]
+    pub dry_run: bool,
+}
+
 #[derive(Args, Debug)]
 pub struct HookArgs {
-    /// `context` introduces the brain (attach to SessionStart), `recall`
-    /// answers the prompt just typed (UserPromptSubmit), `flush` asks for what
-    /// the session learned before it is lost (PreCompact, SessionEnd).
-    #[arg(value_enum)]
-    pub what: crate::hook::What,
-
     /// Which harness is going to read this.
     ///
     /// `claude` is the default and is also correct for Codex and Gemini CLI --

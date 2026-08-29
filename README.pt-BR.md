@@ -689,20 +689,32 @@ Outros sete harnesses estão ligados em [`hooks/`](hooks/) — veja a tabela aba
 
 | evento | o que faz |
 |---|---|
-| **SessionStart** | diz o que é este brain: o rótulo, o que ele guarda e os predicados que ele aprendeu. Contagens e vocabulário, porque "você tem memória" não é algo em que um agente possa agir. |
+| **SessionStart** | diz o que é este brain: o rótulo, o que ele guarda, os predicados que ele aprendeu e no que a última sessão aqui trabalhou. Contagens e vocabulário, porque "você tem memória" não é algo em que um agente possa agir. |
 | **UserPromptSubmit** | responde ao prompt a partir do brain antes de o modelo vê-lo, e diz desde quando cada resposta vale. |
 | **PreCompact** | pede o que a sessão aprendeu e vale mais que uma sessão, num único `remember --batch`, enquanto o transcript ainda pode ser lido. |
+| **Stop, SessionEnd** | grava o que esta sessão *fez* — o que foi pedido, quais arquivos mudaram, o que rodou, como terminou — a partir do transcript do próprio harness, sem modelo nenhum no caminho. |
 
 O que torna ler-a-cada-prompt viável é o resto deste projeto: nenhum servidor
 para alcançar, nenhum endpoint de embedding para chamar, nenhum modelo no caminho
 de leitura. Um desenho que precisasse de uma chamada de API por prompt teria que
 ser seletivo, e seletivo é exatamente a falha sendo corrigida.
 
-Três regras, porque isto é código que ninguém está olhando:
+Quatro regras, porque isto é código que ninguém está olhando:
 
-- **Nunca escreve.** Ler é seguro de fazer sem condição; um brain que ganhasse um
-  fato toda vez que alguém digitasse seria um log. O que a sessão aprendeu
-  continua virando fato por um `remember` deliberado, visível no transcript.
+- **Os hooks que respondem nunca escrevem.** Ler é seguro de fazer sem condição;
+  um brain que ganhasse um fato toda vez que alguém digitasse seria um log. O que
+  a sessão *aprendeu* continua virando fato por um `remember` deliberado, visível
+  no transcript, porque decidir o que vale saber é um juízo e um juízo tem que
+  ser de alguém.
+
+  O único hook que escreve é o `capture`, e ele é estreito o bastante para rodar
+  sozinho: o que uma sessão *fez* não é juízo — o transcript diz literalmente —
+  então é extraído sem modelo e gravado sobre `session/<id>` e mais nada, no
+  escopo `sessions`, sob seis predicados (`worked_on`, `edited`, `ran`, `branch`,
+  `harness`, `concluded`). Ele não consegue contradizer um valor que uma pessoa
+  gravou porque nunca escreve em um, e capturar a mesma sessão dez vezes deixa
+  uma sessão, não dez. `--not-scope sessions` mantém tudo isso fora do que é
+  injetado a cada prompt.
 - **Nunca falha.** Nenhum brain neste diretório, entrada ilegível, uma pergunta
   que não achou nada — todos imprimem `{}` e saem com 0. A maior parte da vida de
   um hook se passa em projetos que nunca rodaram `brain init`, e um hook que
@@ -736,22 +748,45 @@ Três regras, porque isto é código que ninguém está olhando:
 injetado. Os dois ficam no ambiente de propósito: o arquivo de configuração que
 instalou um hook raramente é onde quem está depurando vai olhar.
 
-`brain hook context | recall | flush` é a interface inteira, então as mesmas três
-respostas podem ser ligadas à mão no `.claude/settings.json`.
+`brain hook context | recall | flush | capture` é a interface inteira, então as
+mesmas respostas podem ser ligadas à mão no `.claude/settings.json`. Para ver o
+que uma captura gravaria antes de ligar em qualquer lugar:
+
+```bash
+brain hook capture --transcript ~/.claude/projects/<projeto>/<sessao>.jsonl --dry-run
+```
 
 Oito harnesses têm configuração aqui, e a tabela em
 [docs/harnesses.md](docs/harnesses.md) diz o que cada um **consegue** fazer, não o
 que seria bom que fizesse:
 
-| harness | apresentar | recall por prompt | flush |
-|---|---|---|---|
-| Claude Code | ✅ | ✅ | ✅ |
-| Cline | ✅ | ✅ | ✅ |
-| Codex | ✅ | ✅ | ❌ o schema de `PreCompact` rejeita contexto |
-| Gemini CLI | ⚠️ bug aberto no upstream | ✅ | ❌ |
-| OpenCode, Kilo Code | ❌ | ✅ | ❌ sem hook de ciclo de vida onde encaixar |
-| Cursor | ✅ | ❌ o hook de prompt é um portão, não um injetor | ❌ |
-| Augment | ✅ | ❌ não tem `UserPromptSubmit` | ❌ |
+| harness | apresentar | recall por prompt | flush | capture |
+|---|---|---|---|---|
+| Claude Code | ✅ | ✅ | ✅ | ✅ |
+| Cline | ✅ | ✅ | ✅ | ❌ não entrega transcript nenhum |
+| Codex | ✅ | ✅ | ✅ | ⏳ formato do transcript não verificado |
+| Gemini CLI | ⚠️ bug aberto no upstream | ✅ no `BeforeAgent` | ❌ | ⏳ formato do transcript não verificado |
+| OpenCode, Kilo Code | ❌ | ✅ | ❌ sem hook de ciclo de vida onde encaixar | ❌ |
+| Cursor | ✅ | ❌ o hook de prompt é um portão, não um injetor | ❌ | ❌ |
+| Augment | ✅ | ❌ não tem `UserPromptSubmit` | ❌ | ⏳ formato do transcript não verificado |
+
+⏳ é o evento existir e ninguém aqui ter lido o arquivo que ele aponta. O capture
+lê o transcript do próprio harness, e um dialeto chutado é exatamente a falha
+silenciosa de que o resto desta seção trata.
+
+Ligar um deles é um comando:
+
+```console
+$ brain hook install claude-code
+created /home/you/.claude/settings.json
+claude-code is wired up
+```
+
+Ele escreve o caminho absoluto do binário em execução, então não há placeholder
+para esquecer; faz merge no que já existe na configuração em vez de substituir; e
+instalar duas vezes deixa um hook, não dois. `--dry-run` mostra o plano,
+`--project` limita ao diretório atual. Flags de feature que um harness exige
+ligadas são impressas como "still to do", não ligadas por conta própria.
 
 Codex e Gemini CLI não precisam de envelope novo: o Codex implementou o formato
 do Claude Code de propósito — o motor dele se chama `ClaudeHooksEngine` — e o

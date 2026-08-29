@@ -11,6 +11,7 @@
 pub mod alias;
 pub mod batch;
 pub mod brain;
+pub mod capture;
 pub mod cli;
 pub mod clock;
 pub mod config;
@@ -19,6 +20,7 @@ pub mod graph;
 pub mod hook;
 pub mod ids;
 pub mod index;
+pub mod install;
 pub mod kin;
 pub mod lint;
 pub mod locate;
