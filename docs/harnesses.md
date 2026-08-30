@@ -30,6 +30,14 @@ never fails, never blocks and prints nothing, exactly like the other three. Run
 it by hand against a transcript with `brain hook capture --transcript <path>
 --dry-run`.
 
+`edited` counts a file however the session reached it. An agent may be configured
+to prefer the shell for file work, and then a session that changed nine files
+makes no edit-tool call at all — so a redirection, a `tee`, a `sed -i`, a
+`git rm`/`mv`, and an interpreter heredoc that opens a path for writing are all
+read as edits, and joined onto the transcript's own `cwd` so the same file is one
+row however it was named. Reading is still not changing: a `grep`, a `cat`, a
+`>` into `/tmp` and an `open()` without a write mode record nothing.
+
 `brain hook context` reads those back at the start of the next session, so an
 agent is told what it was doing last time rather than having to think to go
 looking. `--not-scope sessions`, or `BRAIN_HOOK_NOT_SCOPE=sessions`, leaves them

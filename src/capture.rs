@@ -231,8 +231,15 @@ fn absorb(d: &mut Digest, row: &Value) {
                     d.concluded = Some(crate::hook::flatten(&text, MAX_CONCLUSION_CHARS));
                 }
             }
+            // The directory the command ran in, as the transcript states it. A
+            // shell path is relative to it and an `Edit` path is absolute, so
+            // without this the same file is two rows under two spellings.
+            let cwd = row
+                .get("cwd")
+                .and_then(Value::as_str)
+                .filter(|c| c.starts_with('/'));
             for (name, input) in tool_uses(row) {
-                absorb_tool(d, name, input);
+                absorb_tool(d, name, input, cwd);
             }
         }
         _ => {}
@@ -243,21 +250,27 @@ fn absorb(d: &mut Digest, row: &Value) {
 ///
 /// Reading, searching and listing are how the work was done; changing a file and
 /// running a build are what the work *was*. Only the second kind survives.
-fn absorb_tool(d: &mut Digest, name: &str, input: &Value) {
+fn absorb_tool(d: &mut Digest, name: &str, input: &Value, cwd: Option<&str>) {
     match name {
         "Edit" | "Write" | "MultiEdit" | "NotebookEdit" => {
             let Some(path) = input.get("file_path").and_then(Value::as_str) else {
                 return;
             };
-            let path = crate::hook::flatten(path, MAX_COMMAND_CHARS);
-            if !path.is_empty() && !d.edited.contains(&path) && d.edited.len() < MAX_EDITED {
-                d.edited.push(path);
-            }
+            push_edited(d, crate::hook::flatten(path, MAX_COMMAND_CHARS));
         }
         "Bash" => {
             let Some(command) = input.get("command").and_then(Value::as_str) else {
                 return;
             };
+            // A file replaced by a redirection, a `sed -i` or an interpreter
+            // heredoc is as edited as one an Edit call touched. This is not a
+            // nicety: a harness can be configured to prefer the shell for file
+            // work, and such a session makes no Edit calls at all -- it changes
+            // nine files and, before this, said it had changed the two that
+            // happened to go through a tool.
+            for path in written_paths(command) {
+                push_edited(d, absolute(&path, cwd));
+            }
             if let Some(c) = notable(command)
                 && !d.ran.contains(&c)
             {
@@ -379,23 +392,261 @@ const NOTABLE_GIT: &[&str] = &[
 /// Wrappers that stand in front of the command actually being run.
 const WRAPPERS: &[&str] = &["sudo", "time", "nice", "env", "command", "exec"];
 
-/// The notable part of a command line, if there is one.
+/// A path as the transcript can name it: absolute when the row said where it ran.
 ///
-/// Split on the shell's own separators first, because a command is routinely a
-/// chain: `cd repo && cargo test` is a `cargo test`, and reading only the first
-/// word of it finds a `cd`.
-fn notable(command: &str) -> Option<String> {
-    // One separator, so the split below is one pass over one pattern. `||` is
-    // replaced before `|` because the shorter one is a prefix of the longer.
-    let flattened = command
+/// A join, not a resolution -- nothing here touches the filesystem, which may not
+/// hold that file any more and, when a hook reads someone else's transcript, was
+/// never the filesystem the work happened on.
+fn absolute(path: &str, cwd: Option<&str>) -> String {
+    let Some(cwd) = cwd.filter(|_| !path.starts_with('/')) else {
+        return path.to_string();
+    };
+    format!(
+        "{}/{}",
+        cwd.trim_end_matches('/'),
+        path.trim_start_matches("./")
+    )
+}
+
+/// Records a file the session changed, whatever route the change took.
+fn push_edited(d: &mut Digest, path: String) {
+    if !path.is_empty() && !d.edited.contains(&path) && d.edited.len() < MAX_EDITED {
+        d.edited.push(path);
+    }
+}
+
+/// The roots whose files are scratch rather than work.
+///
+/// A session writes under `/tmp` constantly and it is never the thing it was
+/// asked for. Excluding them here rather than at read time is what keeps the
+/// fact honest: `edited` should not name a file nobody would call an edit.
+const EPHEMERAL: &[&str] = &["/dev/", "/proc/", "/sys/", "/tmp/", "/var/tmp/"];
+
+/// Commands whose file operands are the files they replaced.
+///
+/// An allowlist, for the same reason [`NOTABLE`] is one: the ways to read a file
+/// are open-ended and grow with every tool installed, while the ways to replace
+/// one are few, named, and the same everywhere.
+const WRITERS: &[&str] = &[
+    "tee", "touch", "truncate", "mv", "cp", "rm", "rmdir", "install", "mkfifo",
+];
+
+/// The git subcommands that move a file rather than a commit.
+const WRITER_GIT: &[&str] = &["rm", "mv"];
+
+/// A command line split on the shell's own separators.
+///
+/// Because a command is routinely a chain: `cd repo && cargo test` is a
+/// `cargo test`, and reading only the first word of it finds a `cd`.
+fn segments(command: &str) -> Vec<String> {
+    // One separator, so the split is one pass over one pattern. `||` is replaced
+    // before `|` because the shorter one is a prefix of the longer.
+    command
         .replace("&&", "\u{1}")
         .replace("||", "\u{1}")
-        .replace(['|', ';', '\n'], "\u{1}");
-    for segment in flattened.split('\u{1}') {
-        let segment = segment.trim();
-        if segment.is_empty() {
+        .replace(['|', ';', '\n'], "\u{1}")
+        .split('\u{1}')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+/// Whether a token names a file, as opposed to a number, a flag, or the piece of
+/// SQL that happened to sit next to a `>`.
+///
+/// Deliberately strict. Everything reaching here was found by a heuristic, and a
+/// wrong `edited` is worse than a missing one: the missing file is still in git,
+/// while the wrong one is a fact the next session reads as true. A name with no
+/// extension -- `Makefile`, `Dockerfile` -- is not recognised, and that is the
+/// cheap failure being chosen on purpose.
+fn path_like(token: &str) -> bool {
+    let t = token.trim_matches(|c| c == '"' || c == '\'');
+    if t.is_empty() || t.len() > MAX_COMMAND_CHARS || t.starts_with('-') {
+        return false;
+    }
+    if !t
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || "._/~+-".contains(c))
+    {
+        return false;
+    }
+    if EPHEMERAL.iter().any(|root| t.starts_with(root)) {
+        return false;
+    }
+    // A file, not a directory: the last component carries an extension, or is a
+    // dotfile. `s/foo/bar/` ends on a separator, so its last component is empty
+    // and a sed script cannot be mistaken for the file it edits.
+    let last = t.rsplit('/').next().unwrap_or(t);
+    let alnum = |s: &str| !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric());
+    match last.split_once('.') {
+        None => false,
+        Some(("", rest)) => alnum(rest),
+        Some(_) => {
+            let ext = last.rsplit('.').next().unwrap_or("");
+            ext.len() <= 8 && alnum(ext)
+        }
+    }
+}
+
+/// The targets of the output redirections in one segment.
+fn redirect_targets(segment: &str, out: &mut Vec<String>) {
+    let words: Vec<&str> = segment.split_whitespace().collect();
+    for (i, word) in words.iter().enumerate() {
+        let Some(at) = word.find('>') else { continue };
+        // `2>file` is a redirection; `"startTime" > now()` is SQL that a split on
+        // whitespace happened to walk through.
+        if !word[..at].chars().all(|c| c.is_ascii_digit()) {
             continue;
         }
+        let rest = word[at..].trim_start_matches('>');
+        // `>&2`, `2>&1`: a descriptor, not a file.
+        if rest.starts_with('&') {
+            continue;
+        }
+        let target = if rest.is_empty() {
+            match words.get(i + 1) {
+                Some(next) => *next,
+                None => continue,
+            }
+        } else {
+            rest
+        };
+        if path_like(target) {
+            out.push(target.to_string());
+        }
+    }
+}
+
+/// The file operands of a command that exists to change files.
+fn writer_targets(segment: &str, out: &mut Vec<String>) {
+    let mut words = segment.split_whitespace().peekable();
+    while words.peek().is_some_and(|w| WRAPPERS.contains(w)) {
+        words.next();
+    }
+    let Some(head) = words.next() else { return };
+    let head = head.rsplit('/').next().unwrap_or(head);
+    let writes = match head {
+        "git" => words.next().is_some_and(|sub| WRITER_GIT.contains(&sub)),
+        // `sed script file` prints; only `-i` replaces, and the flag may carry a
+        // backup suffix.
+        "sed" => segment
+            .split_whitespace()
+            .any(|w| w == "--in-place" || (w.starts_with("-i") && !w.starts_with("--"))),
+        other => WRITERS.contains(&other),
+    };
+    if !writes {
+        return;
+    }
+    for word in words {
+        if path_like(word) {
+            out.push(word.to_string());
+        }
+    }
+}
+
+/// The files an interpreter opened for writing.
+///
+/// The one non-shell shape worth reading, because it is the one an agent working
+/// through Bash actually uses: a `python3 - <<'PY'` that reads a file, rewrites
+/// it in memory and writes it back. The path is in the command literally --
+/// either inside the call, or in a plain assignment to the name the call uses --
+/// and nothing here guesses past those two forms. `open(paths[i], "w")` records
+/// nothing, which is the cheap failure.
+fn interpreter_targets(command: &str, out: &mut Vec<String>) {
+    for (i, _) in command.match_indices("open(") {
+        let after = &command[i + "open(".len()..];
+        let Some(close) = after.find(')') else {
+            continue;
+        };
+        let mut args = after[..close].split(',');
+        let (Some(first), Some(mode)) = (args.next(), args.next()) else {
+            continue;
+        };
+        let quotes = |c: char| c == '\'' || c == '"';
+        // Read modes are most of the calls in a transcript and none of the edits.
+        if !mode
+            .trim()
+            .trim_matches(quotes)
+            .starts_with(['w', 'a', 'x'])
+        {
+            continue;
+        }
+        let first = first.trim();
+        let path = if first.starts_with(quotes) {
+            first.trim_matches(quotes).to_string()
+        } else {
+            match literal_assigned_to(command, first) {
+                Some(p) => p,
+                None => continue,
+            }
+        };
+        if path_like(&path) {
+            out.push(path);
+        }
+    }
+}
+
+/// The literal a plain `name = "value"` assignment binds, if exactly one does.
+///
+/// Two different bindings of the same name is a loop or a rebind, and which one
+/// the write saw is not knowable from the text -- so that records nothing too.
+fn literal_assigned_to(command: &str, name: &str) -> Option<String> {
+    if name.is_empty()
+        || name.starts_with(|c: char| c.is_ascii_digit())
+        || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+    {
+        return None;
+    }
+    let mut found: Option<String> = None;
+    for line in command.lines() {
+        let Some(rest) = line.trim_start().strip_prefix(name) else {
+            continue;
+        };
+        // `p = '...'` binds; `p == '...'` compares, and `path = '...'` is a
+        // different name that merely starts with this one.
+        let Some(rest) = rest.trim_start().strip_prefix('=') else {
+            continue;
+        };
+        let rest = rest.trim_start();
+        let Some(quote) = rest.chars().next().filter(|c| *c == '\'' || *c == '"') else {
+            continue;
+        };
+        let Some(value) = rest[quote.len_utf8()..].split(quote).next() else {
+            continue;
+        };
+        if found.as_deref().is_some_and(|f| f != value) {
+            return None;
+        }
+        found = Some(value.to_string());
+    }
+    found
+}
+
+/// The files a command replaced, as opposed to the ones it read.
+///
+/// Order is the order the command changed them, deduped, so a chain reads back
+/// the way it ran.
+fn written_paths(command: &str) -> Vec<String> {
+    let mut found = Vec::new();
+    for segment in segments(command) {
+        redirect_targets(&segment, &mut found);
+        writer_targets(&segment, &mut found);
+    }
+    interpreter_targets(command, &mut found);
+    let mut out: Vec<String> = Vec::new();
+    for path in found {
+        let path = crate::hook::flatten(&path, MAX_COMMAND_CHARS);
+        if !path.is_empty() && !out.contains(&path) {
+            out.push(path);
+        }
+    }
+    out
+}
+
+/// The notable part of a command line, if there is one.
+fn notable(command: &str) -> Option<String> {
+    for segment in segments(command) {
+        let segment = segment.as_str();
         let mut words = segment.split_whitespace().peekable();
         // Step past whatever is standing in front of the real command.
         while words.peek().is_some_and(|w| WRAPPERS.contains(w)) {
@@ -560,6 +811,42 @@ mod tests {
             notable("/usr/bin/make release").as_deref(),
             Some("/usr/bin/make release")
         );
+    }
+
+    #[test]
+    fn a_file_rewritten_through_the_shell_is_an_edit() {
+        // The three shapes that started this, taken from one real session: a
+        // heredoc appended to a test, a deletion chained into an in-place sed,
+        // and an interpreter rewriting a file it opened through a variable.
+        assert_eq!(
+            written_paths("cat >> tests/test_wiring.py <<'EOF'\nx = 1\nEOF"),
+            vec!["tests/test_wiring.py"]
+        );
+        assert_eq!(
+            written_paths(
+                "git rm -q cjk_strip.py && sed -i '\\#/app/cjk_strip.py#d' docker-compose.yml"
+            ),
+            vec!["cjk_strip.py", "docker-compose.yml"]
+        );
+        assert_eq!(
+            written_paths(
+                "python3 - <<'PY'\np='claudinio_prompt/manager.py'\ns=open(p).read()\nopen(p,'w').write(s)\nPY"
+            ),
+            vec!["claudinio_prompt/manager.py"]
+        );
+    }
+
+    #[test]
+    fn looking_is_still_not_changing() {
+        for looked in [
+            "grep -n cjk claudinio_prompt/manager.py",
+            "docker exec pg psql -c \"select x from t where \\\"startTime\\\" > now()\"",
+            "cargo test 2>&1 | tail -5",
+            "curl -s https://api/x > /tmp/out.json",
+            "python3 - <<'PY'\ns=open('config.yaml').read()\nprint(len(s))\nPY",
+        ] {
+            assert!(written_paths(looked).is_empty(), "{looked}");
+        }
     }
 
     #[test]
