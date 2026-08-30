@@ -268,8 +268,8 @@ fn absorb_tool(d: &mut Digest, name: &str, input: &Value, cwd: Option<&str>) {
             // work, and such a session makes no Edit calls at all -- it changes
             // nine files and, before this, said it had changed the two that
             // happened to go through a tool.
-            for path in written_paths(command) {
-                push_edited(d, absolute(&path, cwd));
+            for path in written_paths(command, cwd) {
+                push_edited(d, path);
             }
             if let Some(c) = notable(command)
                 && !d.ran.contains(&c)
@@ -427,21 +427,96 @@ const EPHEMERAL: &[&str] = &["/dev/", "/proc/", "/sys/", "/tmp/", "/var/tmp/"];
 /// An allowlist, for the same reason [`NOTABLE`] is one: the ways to read a file
 /// are open-ended and grow with every tool installed, while the ways to replace
 /// one are few, named, and the same everywhere.
+// `mkdir`/`rmdir` are deliberately absent: a directory is not a file somebody
+// edited, and `.patches` reads as a dotfile to `path_like`.
 const WRITERS: &[&str] = &[
-    "tee", "touch", "truncate", "mv", "cp", "rm", "rmdir", "install", "mkfifo",
+    "tee", "touch", "truncate", "mv", "cp", "rm", "install", "mkfifo",
 ];
 
 /// The git subcommands that move a file rather than a commit.
 const WRITER_GIT: &[&str] = &["rm", "mv"];
 
-/// A command line split on the shell's own separators.
+/// One command, separated into the shell it runs and the heredoc bodies it feeds.
 ///
-/// Because a command is routinely a chain: `cd repo && cargo test` is a
+/// Each body is returned with the line that opened it, because what a body *is*
+/// depends on that line: after `python3 - <<'PY'` it is a program, and after
+/// `cat > notes.md <<'EOF'` it is a file's contents that happens to be about
+/// programs.
+fn split_heredocs(command: &str) -> (String, Vec<(String, String)>) {
+    let mut shell = String::with_capacity(command.len());
+    let mut bodies: Vec<(String, String)> = Vec::new();
+    let mut open_tags: Vec<(String, String)> = Vec::new();
+    for line in command.lines() {
+        if let Some((tag, opener)) = open_tags.first() {
+            // The delimiter ends the body; `<<-` allows it to be indented.
+            if line.trim() == tag.as_str() {
+                open_tags.remove(0);
+                continue;
+            }
+            let opener = opener.clone();
+            match bodies.last_mut() {
+                Some((o, body)) if *o == opener => {
+                    body.push_str(line);
+                    body.push('\n');
+                }
+                _ => bodies.push((opener, format!("{line}\n"))),
+            }
+            continue;
+        }
+        shell.push_str(line);
+        shell.push('\n');
+        open_tags.extend(
+            heredoc_tags(line)
+                .into_iter()
+                .map(|t| (t, line.to_string())),
+        );
+    }
+    (shell, bodies)
+}
+
+/// The interpreters whose heredoc body is a program rather than a document.
+const INTERPRETERS: &[&str] = &[
+    "python", "python2", "python3", "node", "ruby", "perl", "php", "deno", "bun", "julia",
+    "Rscript",
+];
+
+/// The text an interpreter was actually handed: the shell itself, plus the
+/// bodies of the heredocs an interpreter opened.
+///
+/// The gate matters. A `cat > pr.md <<'EOF'` body is a document being written,
+/// and a document about this very feature quotes `open('x.py', 'w')` -- which,
+/// read as a program, claims an edit to a file that was only ever mentioned.
+fn interpreted_text(command: &str) -> String {
+    let (shell, bodies) = split_heredocs(command);
+    let mut out = shell;
+    for (opener, body) in bodies {
+        let runs_one = opener.split_whitespace().any(|w| {
+            let w = w.rsplit('/').next().unwrap_or(w);
+            INTERPRETERS.contains(&w)
+        });
+        if runs_one {
+            out.push_str(&body);
+        }
+    }
+    out
+}
+
+/// A command line split on the shell's own separators, heredoc bodies removed.
+///
+/// Split, because a command is routinely a chain: `cd repo && cargo test` is a
 /// `cargo test`, and reading only the first word of it finds a `cd`.
+///
+/// Bodies removed, because they are not commands. A `python3 - <<'PY'` carries a
+/// program, and a `cat > f <<'EOF'` carries a file's contents, and a session
+/// writing *about* shell -- a test fixture, a README, a commit message quoting
+/// one -- puts command-shaped text inside them. Read as commands, that text
+/// claims edits that never happened. The heredoc's own redirection is on the
+/// line that opens it, so `cat >> f <<'EOF'` survives this intact.
 fn segments(command: &str) -> Vec<String> {
     // One separator, so the split is one pass over one pattern. `||` is replaced
     // before `|` because the shorter one is a prefix of the longer.
-    command
+    split_heredocs(command)
+        .0
         .replace("&&", "\u{1}")
         .replace("||", "\u{1}")
         .replace(['|', ';', '\n'], "\u{1}")
@@ -449,6 +524,56 @@ fn segments(command: &str) -> Vec<String> {
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .collect()
+}
+
+/// The heredoc delimiters one line opens, in the order their bodies follow.
+fn heredoc_tags(line: &str) -> Vec<String> {
+    let bytes = line.as_bytes();
+    let mut tags = Vec::new();
+    let mut i = 0;
+    while let Some(at) = line[i..].find("<<") {
+        let mut j = i + at + 2;
+        // `<<<` is a here-string: it takes its word inline and opens no body.
+        if bytes.get(j) == Some(&b'<') {
+            i = j + 1;
+            continue;
+        }
+        if bytes.get(j) == Some(&b'-') {
+            j += 1;
+        }
+        while bytes.get(j) == Some(&b' ') {
+            j += 1;
+        }
+        let quote = matches!(bytes.get(j), Some(b'\'') | Some(b'"')).then(|| bytes[j]);
+        if quote.is_some() {
+            j += 1;
+        }
+        let start = j;
+        while let Some(&c) = bytes.get(j) {
+            let ends = match quote {
+                Some(q) => c == q,
+                None => !(c.is_ascii_alphanumeric() || c == b'_'),
+            };
+            if ends {
+                break;
+            }
+            j += 1;
+        }
+        if start < j {
+            tags.push(line[start..j].to_string());
+        }
+        i = j.max(i + at + 2);
+    }
+    tags
+}
+
+/// A token with the shell quoting taken off.
+///
+/// One place, used both to judge a token and to record it -- so that a
+/// `sed -i ... "docker-compose.yml"` cannot be accepted on the trimmed spelling
+/// and then stored with the quote still on it.
+fn unquoted(token: &str) -> &str {
+    token.trim_matches(|c| c == '"' || c == '\'')
 }
 
 /// Whether a token names a file, as opposed to a number, a flag, or the piece of
@@ -460,7 +585,7 @@ fn segments(command: &str) -> Vec<String> {
 /// extension -- `Makefile`, `Dockerfile` -- is not recognised, and that is the
 /// cheap failure being chosen on purpose.
 fn path_like(token: &str) -> bool {
-    let t = token.trim_matches(|c| c == '"' || c == '\'');
+    let t = unquoted(token);
     if t.is_empty() || t.len() > MAX_COMMAND_CHARS || t.starts_with('-') {
         return false;
     }
@@ -512,7 +637,7 @@ fn redirect_targets(segment: &str, out: &mut Vec<String>) {
             rest
         };
         if path_like(target) {
-            out.push(target.to_string());
+            out.push(unquoted(target).to_string());
         }
     }
 }
@@ -539,7 +664,7 @@ fn writer_targets(segment: &str, out: &mut Vec<String>) {
     }
     for word in words {
         if path_like(word) {
-            out.push(word.to_string());
+            out.push(unquoted(word).to_string());
         }
     }
 }
@@ -622,17 +747,44 @@ fn literal_assigned_to(command: &str, name: &str) -> Option<String> {
     found
 }
 
+/// Where a segment moves to, if moving is all it does.
+fn cd_target(segment: &str) -> Option<&str> {
+    let mut words = segment.split_whitespace();
+    if words.next()? != "cd" {
+        return None;
+    }
+    let dir = words.next()?;
+    // `cd -`, and anything with more words, is not a plain move somewhere.
+    if dir.starts_with('-') || words.next().is_some() {
+        return None;
+    }
+    Some(unquoted(dir))
+}
+
 /// The files a command replaced, as opposed to the ones it read.
 ///
 /// Order is the order the command changed them, deduped, so a chain reads back
-/// the way it ran.
-fn written_paths(command: &str) -> Vec<String> {
-    let mut found = Vec::new();
+/// the way it ran. Resolved against `cwd` and against any `cd` the chain does
+/// first -- a session working in a clone under `/tmp` writes `cd there && sed -i
+/// f.py`, and joining that onto the harness's own cwd would name a file in the
+/// wrong repository, which is worse than naming none.
+fn written_paths(command: &str, cwd: Option<&str>) -> Vec<String> {
+    let mut base = cwd.map(str::to_string);
+    let mut found: Vec<String> = Vec::new();
     for segment in segments(command) {
-        redirect_targets(&segment, &mut found);
-        writer_targets(&segment, &mut found);
+        if let Some(dir) = cd_target(&segment) {
+            base = Some(absolute(dir, base.as_deref()));
+            continue;
+        }
+        let mut here = Vec::new();
+        redirect_targets(&segment, &mut here);
+        writer_targets(&segment, &mut here);
+        found.extend(here.iter().map(|p| absolute(p, base.as_deref())));
     }
-    interpreter_targets(command, &mut found);
+    let mut interp = Vec::new();
+    interpreter_targets(&interpreted_text(command), &mut interp);
+    found.extend(interp.iter().map(|p| absolute(p, base.as_deref())));
+
     let mut out: Vec<String> = Vec::new();
     for path in found {
         let path = crate::hook::flatten(&path, MAX_COMMAND_CHARS);
@@ -819,20 +971,72 @@ mod tests {
         // heredoc appended to a test, a deletion chained into an in-place sed,
         // and an interpreter rewriting a file it opened through a variable.
         assert_eq!(
-            written_paths("cat >> tests/test_wiring.py <<'EOF'\nx = 1\nEOF"),
+            written_paths("cat >> tests/test_wiring.py <<'EOF'\nx = 1\nEOF", None),
             vec!["tests/test_wiring.py"]
         );
         assert_eq!(
             written_paths(
-                "git rm -q cjk_strip.py && sed -i '\\#/app/cjk_strip.py#d' docker-compose.yml"
+                "git rm -q cjk_strip.py && sed -i '\\#/app/cjk_strip.py#d' \"docker-compose.yml\"",
+                None
             ),
-            vec!["cjk_strip.py", "docker-compose.yml"]
+            vec!["cjk_strip.py", "docker-compose.yml"],
+            "and the quotes come off what is stored, not just what is judged"
         );
         assert_eq!(
             written_paths(
-                "python3 - <<'PY'\np='claudinio_prompt/manager.py'\ns=open(p).read()\nopen(p,'w').write(s)\nPY"
+                "python3 - <<'PY'\np='claudinio_prompt/manager.py'\ns=open(p).read()\nopen(p,'w').write(s)\nPY",
+                None
             ),
             vec!["claudinio_prompt/manager.py"]
+        );
+    }
+
+    #[test]
+    fn a_chain_that_moves_first_edits_where_it_moved_to() {
+        // The session that found this was working in a clone under /tmp while the
+        // harness recorded the repo it was launched from. Joining onto the
+        // harness's cwd names a file in the wrong repository.
+        assert_eq!(
+            written_paths(
+                "cd /tmp/clone && sed -i 's/a/b/' src/capture.rs",
+                Some("/repo")
+            ),
+            vec!["/tmp/clone/src/capture.rs"]
+        );
+        assert_eq!(
+            written_paths("sed -i 's/a/b/' src/capture.rs", Some("/repo")),
+            vec!["/repo/src/capture.rs"],
+            "and without a cd it is still the cwd"
+        );
+    }
+
+    #[test]
+    fn a_heredoc_body_is_text_not_commands() {
+        // A session writing *about* shell -- a test fixture, a README, a commit
+        // message quoting a command -- puts command-shaped text inside a heredoc.
+        // Read as commands, it claims edits that never happened. This is the
+        // transcript of the session that shipped the feature above.
+        let writing_a_fixture = "cat > src/capture.rs <<'RS'\n\
+            assert_eq!(written_paths(\"git rm -q cjk_strip.py && \
+            sed -i '/x/d' docker-compose.yml\"), vec![\"cjk_strip.py\"]);\n\
+            RS";
+        assert_eq!(
+            written_paths(writing_a_fixture, None),
+            vec!["src/capture.rs"],
+            "the file being written, and nothing the fixture quotes"
+        );
+        // `<<<` is a here-string: it takes its word inline and opens no body, so
+        // what follows is still shell.
+        assert_eq!(
+            written_paths("grep x <<< \"$v\"\ntouch real.py", None),
+            vec!["real.py"]
+        );
+        // And a document is not a program, however much Python it quotes.
+        let writing_a_readme = "cat > pr.md <<'EOF'\n            The rule reads `open('x.py', 'w')` and the name a plain assignment binds.\n            EOF";
+        assert_eq!(
+            written_paths(writing_a_readme, None),
+            vec!["pr.md"],
+            "the document, not the file its prose names"
         );
     }
 
@@ -844,8 +1048,10 @@ mod tests {
             "cargo test 2>&1 | tail -5",
             "curl -s https://api/x > /tmp/out.json",
             "python3 - <<'PY'\ns=open('config.yaml').read()\nprint(len(s))\nPY",
+            // A directory is not a file somebody edited.
+            "rmdir /repo/.patches",
         ] {
-            assert!(written_paths(looked).is_empty(), "{looked}");
+            assert!(written_paths(looked, None).is_empty(), "{looked}");
         }
     }
 

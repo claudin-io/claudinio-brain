@@ -35,8 +35,17 @@ to prefer the shell for file work, and then a session that changed nine files
 makes no edit-tool call at all — so a redirection, a `tee`, a `sed -i`, a
 `git rm`/`mv`, and an interpreter heredoc that opens a path for writing are all
 read as edits, and joined onto the transcript's own `cwd` so the same file is one
-row however it was named. Reading is still not changing: a `grep`, a `cat`, a
-`>` into `/tmp` and an `open()` without a write mode record nothing.
+row however it was named — and after any `cd` the chain does first, so work in a
+clone is not attributed to the directory the harness was launched from. Reading
+is still not changing: a `grep`, a `cat`, a `>` into `/tmp` and an `open()`
+without a write mode record nothing.
+
+A heredoc body is read as what the line opening it said it was: a program after
+`python3 - <<'PY'`, a document after `cat > notes.md <<'EOF'`. The document's
+prose can quote a command without claiming it ran. The limit worth knowing is
+the one case that cannot be told apart from the text: a session whose work *is*
+source code about shell commands — a test fixture full of `open(p, 'w')`, fed to
+an interpreter — can still name a file it only ever quoted.
 
 `brain hook context` reads those back at the start of the next session, so an
 agent is told what it was doing last time rather than having to think to go
