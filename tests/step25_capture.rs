@@ -144,6 +144,7 @@ fn tool(name: &str, input: Value) -> Value {
     json!({
         "type": "assistant",
         "isSidechain": false,
+        "cwd": "/repo",
         "message": {"role": "assistant", "content": [
             {"type": "tool_use", "id": "toolu_1", "name": name, "input": input},
         ]},
@@ -464,6 +465,69 @@ fn a_giant_transcript_is_streamed_and_capped() {
             .as_str()
             .unwrap()
             .contains("xxxxx")
+    );
+}
+
+/// The gap this closes, taken from a real session. A harness can be configured
+/// to prefer the shell for file work -- and then a session that removed a module,
+/// rewrote two more and deleted a mount makes no `Edit` call at all. Before this,
+/// such a session recorded the two files that happened to go through a tool and
+/// the next one read that as "it only touched tests".
+#[test]
+fn a_session_that_edits_through_the_shell_still_says_what_it_changed() {
+    let s = Sandbox::new(true);
+    let lines = vec![
+        ask("remove o strip de CJK e fecha a janela diaria do gate"),
+        // The same file twice, once through a tool and once through the shell.
+        // It is one file and must be one row: the tool names it absolutely, the
+        // shell relative to the cwd the transcript states.
+        tool(
+            "Edit",
+            json!({"file_path": "/repo/claudinio_prompt/manager.py", "old_string": "a", "new_string": "b"}),
+        ),
+        // Three routes, none of them an Edit call.
+        tool(
+            "Bash",
+            json!({"command": "cat >> tests/test_wiring.py <<'EOF'\nassert True\nEOF"}),
+        ),
+        tool(
+            "Bash",
+            json!({"command": "git rm -q cjk_strip.py && sed -i '/cjk_strip/d' docker-compose.yml"}),
+        ),
+        tool(
+            "Bash",
+            json!({"command": "python3 - <<'PY'\np='claudinio_prompt/manager.py'\ns=open(p).read()\nopen(p,'w').write(s.replace('a','b'))\nPY"}),
+        ),
+        // And one that only looked.
+        tool(
+            "Bash",
+            json!({"command": "grep -n cjk claudinio_prompt/manager.py | head -5"}),
+        ),
+        said("Feito: o strip saiu por inteiro."),
+    ];
+
+    s.capture(&s.transcript("shell-only", &lines), &[]);
+    let edited: Vec<String> = s
+        .which("edited")
+        .iter()
+        .map(|f| f["object_text"].as_str().unwrap_or_default().to_string())
+        .collect();
+
+    for changed in [
+        "/repo/tests/test_wiring.py",
+        "/repo/cjk_strip.py",
+        "/repo/docker-compose.yml",
+        "/repo/claudinio_prompt/manager.py",
+    ] {
+        assert!(
+            edited.contains(&changed.to_string()),
+            "{changed} was changed through the shell: {edited:?}"
+        );
+    }
+    assert_eq!(
+        edited.len(),
+        4,
+        "a grep is not an edit, and one file is one row however it was reached: {edited:?}"
     );
 }
 
