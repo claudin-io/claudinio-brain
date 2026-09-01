@@ -234,7 +234,10 @@ pub fn resolve(sel: &Selection, ctx: &Ctx) -> Result<BrainRef, LocateError> {
     })
 }
 
-fn check_conflicts(sel: &Selection) -> Result<(), LocateError> {
+/// Rejects a selection that names more than one brain. Public because `hook
+/// install` writes selectors into config files and must refuse the same
+/// combinations `resolve` would.
+pub fn check_conflicts(sel: &Selection) -> Result<(), LocateError> {
     let mut given = Vec::new();
     if sel.brain.is_some() {
         given.push("--brain");

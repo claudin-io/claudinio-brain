@@ -411,7 +411,7 @@ fn cmd_hook_install(
     ctx: &Ctx,
 ) -> anyhow::Result<()> {
     let project = args.project.then_some(ctx.cwd.as_path());
-    let plan = brain::install::plan(args.harness, project)?;
+    let plan = brain::install::plan(args.harness, project, &(&cli.select).into())?;
 
     if cli.json {
         let changes: Vec<_> = plan

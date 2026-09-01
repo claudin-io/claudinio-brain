@@ -81,6 +81,39 @@ a step you know happened.
 The files under `hooks/` are the same configuration for hand-installing, with an
 `/ABSOLUTE/PATH/TO/brain` placeholder to replace.
 
+### Which brain the hooks answer from
+
+By default, the brain of whatever directory the session is in — that is the
+right wiring for a per-project brain, and it is why installing once, globally,
+works for every checkout. To wire hooks that answer from somewhere else, pass
+the same selectors every other command takes:
+
+```console
+$ brain hook install augment --global        # the global brain
+$ brain hook install codex --use work        # a named brain from the catalogue
+$ brain hook install gemini --brain /path/to/brain.db
+```
+
+The selector is written into every command the install produces, and a global
+wiring and a local one are **different wirings**: installing one does not
+replace the other, so a harness with only session-start injection (Augment,
+Cursor) can carry both — the project's brain and the global one, each
+introduced at start. Reinstalling replaces only the entry with the same
+selector. This holds for hand-written entries too: a local install leaves a
+hand-written `--global` entry exactly where it was.
+
+The three plugin-file harnesses (OpenCode, Kilo Code, OpenClaw) run `brain`
+bare from PATH inside a bundled file, so there is nowhere to write a selector;
+asking for one there is refused rather than silently ignored.
+
+`hooks/brain-hook.sh` forwards the same flags: the first positional is the
+event, the second is the format, and `--global`, `--use <name>`, `--brain
+<path>` pass through wherever they appear. It used to read its second argument
+as the format unconditionally, which turned `brain-hook.sh context --global`
+into `brain hook context --format --global` — an error the wrapper swallows by
+design, so the global brain went silently uninjected. The contract is pinned by
+`tests/step26_wrapper.rs`.
+
 ## What is verified here
 
 The table says what was checked against a published schema or the harness's own
@@ -332,6 +365,14 @@ nothing per-prompt. `SessionEnd` cannot inject, so there is no flush either.
 `Stop` and `SessionEnd` both exist, so capture is possible in principle; as with
 Codex and Gemini, what is missing is somebody having read the transcript file it
 would parse.
+
+Because Augment only injects at `SessionStart`, the useful setup for someone
+with both a project brain and a global one is two entries on that event:
+
+```console
+$ brain hook install augment
+$ brain hook install augment --global
+```
 
 ## Everything else
 
