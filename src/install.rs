@@ -23,6 +23,7 @@
 //! first. Every plan can be printed instead of applied -- see `--dry-run`, which
 //! exists here for the same reason it exists on `remember`.
 
+use crate::locate::Selection;
 use serde_json::{Map, Value, json};
 use std::path::{Path, PathBuf};
 
@@ -170,6 +171,14 @@ pub enum InstallError {
     NoProjectScope(&'static str),
     #[error("{0}: {1}")]
     Io(PathBuf, std::io::Error),
+    #[error(
+        "{0} runs `brain` bare from PATH inside a bundled plugin file, so a brain \
+         selector cannot be written into it; install it without --global, --use \
+         or --brain"
+    )]
+    NoSelector(&'static str),
+    #[error(transparent)]
+    Selector(#[from] crate::locate::LocateError),
 }
 
 type Result<T> = std::result::Result<T, InstallError>;
@@ -186,7 +195,25 @@ fn home() -> Result<PathBuf> {
 ///
 /// Split from [`apply`] so the answer can be printed. The plan is the whole of
 /// what would happen: there is no step in `apply` that decides anything.
-pub fn plan(harness: Harness, project: Option<&Path>) -> Result<Plan> {
+pub fn plan(harness: Harness, project: Option<&Path>, sel: &Selection) -> Result<Plan> {
+    crate::locate::check_conflicts(sel)?;
+    // The plugin-file harnesses (OpenCode, Kilo, OpenClaw) run `brain` bare from
+    // PATH inside a file this ships verbatim: there is nowhere to write a
+    // selector. Accepting one and installing a file that ignores it would be the
+    // silent no-op this module exists to prevent.
+    let wants_selector = sel.global || sel.use_name.is_some() || sel.brain.is_some();
+    if wants_selector
+        && matches!(
+            harness,
+            Harness::Opencode | Harness::Kilo | Harness::Openclaw
+        )
+    {
+        return Err(InstallError::NoSelector(harness.as_str()));
+    }
+    // Which brain the hooks will answer from, appended to every command written.
+    // Empty for the default: the brain of whatever directory the session is in.
+    let sfx = selector_args(sel);
+    let want = Fingerprint::of_selection(sel);
     let exe = std::env::current_exe().map_err(InstallError::NoExe)?;
     let exe = exe.display().to_string();
     let root = match project {
@@ -206,11 +233,11 @@ pub fn plan(harness: Harness, project: Option<&Path>) -> Result<Plan> {
                 // arrives as its own source code.
                 on(
                     "SessionStart",
-                    format!("{exe} hook context --format text"),
+                    format!("{exe} hook context --format text{sfx}"),
                     15,
                 ),
-                on("UserPromptSubmit", format!("{exe} hook recall"), 10),
-                on("PreCompact", format!("{exe} hook flush"), 10),
+                on("UserPromptSubmit", format!("{exe} hook recall{sfx}"), 10),
+                on("PreCompact", format!("{exe} hook flush{sfx}"), 10),
                 // The two ends of capturing a session, and both are needed.
                 //
                 // `Stop` fires after every turn, so the record survives a session
@@ -222,10 +249,11 @@ pub fn plan(harness: Harness, project: Option<&Path>) -> Result<Plan> {
                 // transcript. Its timeout is not decoration: hooks there share a
                 // second and a half unless one asks for longer, and a hook killed
                 // on its timeout has its work discarded.
-                on("Stop", format!("{exe} hook capture"), 60).detached(),
-                on("SessionEnd", format!("{exe} hook capture"), 60),
+                on("Stop", format!("{exe} hook capture{sfx}"), 60).detached(),
+                on("SessionEnd", format!("{exe} hook capture{sfx}"), 60),
             ],
             Seconds,
+            &want,
         )?],
         Harness::Codex => vec![merge_claude_style(
             match scoped {
@@ -235,15 +263,16 @@ pub fn plan(harness: Harness, project: Option<&Path>) -> Result<Plan> {
                 false => root.join(".codex/hooks.json"),
             },
             &[
-                on("SessionStart", format!("{exe} hook context"), 15),
-                on("UserPromptSubmit", format!("{exe} hook recall"), 10),
+                on("SessionStart", format!("{exe} hook context{sfx}"), 15),
+                on("UserPromptSubmit", format!("{exe} hook recall{sfx}"), 10),
                 // `PreCompact` used to be impossible here: its output schema
                 // carried only the universal fields and denied unknown ones, so
                 // context sent to it was rejected rather than ignored. Codex
                 // documents the shared `hookSpecificOutput` contract on it now.
-                on("PreCompact", format!("{exe} hook flush"), 10),
+                on("PreCompact", format!("{exe} hook flush{sfx}"), 10),
             ],
             Seconds,
+            &want,
         )?],
         Harness::Gemini => vec![merge_claude_style(
             root.join(".gemini/settings.json"),
@@ -251,27 +280,30 @@ pub fn plan(harness: Harness, project: Option<&Path>) -> Result<Plan> {
                 // Seconds here, always. `Unit` below is what converts, and passing
                 // milliseconds to something whose job is to produce them is how
                 // this first shipped a ten-thousand-second timeout.
-                on("SessionStart", format!("{exe} hook context"), 15),
+                on("SessionStart", format!("{exe} hook context{sfx}"), 15),
                 // Not `UserPromptSubmit`, which Gemini does not have. `BeforeAgent`
                 // is its "after the prompt, before the agent plans" event, and the
                 // one place it accepts additionalContext per turn.
-                on("BeforeAgent", format!("{exe} hook recall"), 10),
+                on("BeforeAgent", format!("{exe} hook recall{sfx}"), 10),
             ],
             // Gemini counts this one in milliseconds. Same field, same shape,
             // three orders of magnitude apart.
             Milliseconds,
+            &want,
         )?],
         Harness::Augment => vec![merge_claude_style(
             root.join(".augment/settings.json"),
             // SessionStart only: Augment has no prompt hook at all.
-            &[on("SessionStart", format!("{exe} hook context"), 15)],
+            &[on("SessionStart", format!("{exe} hook context{sfx}"), 15)],
             Seconds,
+            &want,
         )?],
         Harness::Cursor => vec![merge_cursor(
             root.join(".cursor/hooks.json"),
-            format!("{exe} hook context --format cursor"),
+            format!("{exe} hook context --format cursor{sfx}"),
+            &want,
         )?],
-        Harness::Cline => cline_scripts(&root, &exe, scoped)?,
+        Harness::Cline => cline_scripts(&root, &exe, &sfx, scoped)?,
         Harness::Opencode => vec![file(
             match scoped {
                 true => root.join(".opencode/plugins/claudinio-brain.js"),
@@ -291,6 +323,7 @@ pub fn plan(harness: Harness, project: Option<&Path>) -> Result<Plan> {
             }
             vec![merge_hermes_yaml(
                 root.join(".hermes/config.yaml"),
+                &want,
                 &[
                     // Both on the same event, because Hermes injects on exactly
                     // one. `on_session_start` exists and ignores whatever a hook
@@ -302,12 +335,12 @@ pub fn plan(harness: Harness, project: Option<&Path>) -> Result<Plan> {
                     // anything on the turn it is first, so it goes first.
                     on(
                         "pre_llm_call",
-                        format!("{exe} hook context --format hermes"),
+                        format!("{exe} hook context --format hermes{sfx}"),
                         15,
                     ),
                     on(
                         "pre_llm_call",
-                        format!("{exe} hook recall --format hermes"),
+                        format!("{exe} hook recall --format hermes{sfx}"),
                         10,
                     ),
                 ],
@@ -382,7 +415,7 @@ fn file(path: PathBuf, contents: String, executable: bool) -> Change {
 
 /// Cline finds hooks by filename, so there is no config to merge -- three files,
 /// named exactly, executable.
-fn cline_scripts(root: &Path, exe: &str, scoped: bool) -> Result<Vec<Change>> {
+fn cline_scripts(root: &Path, exe: &str, sfx: &str, scoped: bool) -> Result<Vec<Change>> {
     let dir = match scoped {
         true => root.join(".clinerules/hooks"),
         false => root.join("Documents/Cline/Hooks"),
@@ -400,7 +433,7 @@ fn cline_scripts(root: &Path, exe: &str, scoped: bool) -> Result<Vec<Change>> {
                 "#!/bin/sh\n\
                  # claudinio-brain -- Cline {event} hook. Written by `brain hook install`.\n\
                  # Cline finds hooks by filename, so this file's name is load-bearing.\n\
-                 exec {exe} hook {what} --format cline\n"
+                 exec {exe} hook {what} --format cline{sfx}\n"
             ),
             true,
         )
@@ -412,7 +445,12 @@ fn cline_scripts(root: &Path, exe: &str, scoped: bool) -> Result<Vec<Change>> {
 /// `hooks` -> event -> a list of matcher groups, each holding command entries.
 /// `unit` is what turns each [`Wire`]'s timeout into whatever the harness counts
 /// in.
-fn merge_claude_style(path: PathBuf, wires: &[Wire], unit: Unit) -> Result<Change> {
+fn merge_claude_style(
+    path: PathBuf,
+    wires: &[Wire],
+    unit: Unit,
+    want: &Fingerprint,
+) -> Result<Change> {
     let mut root = read_object(&path)?;
     let hooks = entry_object(&mut root, "hooks");
 
@@ -431,7 +469,7 @@ fn merge_claude_style(path: PathBuf, wires: &[Wire], unit: Unit) -> Result<Chang
         // Ours are removed before ours are added, so a second install replaces a
         // first rather than stacking. Everybody else's groups are left exactly
         // where they were.
-        list.retain(|group| !is_ours(group.pointer("/hooks")));
+        list.retain(|group| !is_ours(group.pointer("/hooks"), want));
         // Only the fields these harnesses document. A cosmetic extra would be
         // riding on each of them being lenient about fields it does not know, and
         // one of them parses this with serde.
@@ -449,7 +487,7 @@ fn merge_claude_style(path: PathBuf, wires: &[Wire], unit: Unit) -> Result<Chang
 }
 
 /// Cursor's shape: a version, then `hooks` -> event -> bare command entries.
-fn merge_cursor(path: PathBuf, command: String) -> Result<Change> {
+fn merge_cursor(path: PathBuf, command: String, want: &Fingerprint) -> Result<Change> {
     let mut root = read_object(&path)?;
     root.insert("version".into(), json!(1));
     let hooks = entry_object(&mut root, "hooks");
@@ -460,7 +498,7 @@ fn merge_cursor(path: PathBuf, command: String) -> Result<Change> {
         .ok_or_else(|| {
             InstallError::NotMergeable(path.clone(), "`hooks.sessionStart` is not a list".into())
         })?;
-    list.retain(|e| !is_our_command(e.get("command").and_then(Value::as_str)));
+    list.retain(|e| !is_our_command(e.get("command").and_then(Value::as_str), want));
     list.push(json!({ "command": command }));
     Ok(file(path, pretty(&Value::Object(root)), false))
 }
@@ -473,7 +511,7 @@ fn merge_cursor(path: PathBuf, command: String) -> Result<Change> {
 /// Two hooks share `pre_llm_call` here, which is why clearing and adding are two
 /// passes rather than one: clearing inside the loop would delete the entry the
 /// previous iteration had just added.
-fn merge_hermes_yaml(path: PathBuf, wires: &[Wire]) -> Result<Change> {
+fn merge_hermes_yaml(path: PathBuf, want: &Fingerprint, wires: &[Wire]) -> Result<Change> {
     let mut root = read_yaml_mapping(&path)?;
     let hooks = yaml_entry_mapping(&mut root, "hooks").ok_or_else(|| {
         InstallError::NotMergeable(path.clone(), "`hooks` is not a mapping".into())
@@ -485,7 +523,12 @@ fn merge_hermes_yaml(path: PathBuf, wires: &[Wire]) -> Result<Change> {
         })?;
         // Everybody else's entries stay exactly where they were, with whatever
         // fields they carry -- `matcher` and `fail_closed` are theirs, not ours.
-        list.retain(|e| !is_our_command(e.get("command").and_then(serde_yaml_ng::Value::as_str)));
+        list.retain(|e| {
+            !is_our_command(
+                e.get("command").and_then(serde_yaml_ng::Value::as_str),
+                want,
+            )
+        });
     }
     for w in wires {
         let Some(list) = yaml_entry_sequence(hooks, w.event) else {
@@ -555,23 +598,142 @@ fn yaml_entry_sequence<'a>(
 /// every one of them does have is a command that runs `brain hook`, and replacing
 /// a hand-written entry with the generated one is the correct outcome anyway --
 /// that is what somebody running the installer asked for.
-fn is_ours(hooks: Option<&Value>) -> bool {
+fn is_ours(hooks: Option<&Value>, want: &Fingerprint) -> bool {
     hooks.and_then(Value::as_array).is_some_and(|v| {
         v.iter()
-            .any(|h| is_our_command(h.get("command").and_then(Value::as_str)))
+            .any(|h| is_our_command(h.get("command").and_then(Value::as_str), want))
     })
 }
 
-fn is_our_command(command: Option<&str>) -> bool {
+fn is_our_command(command: Option<&str>, want: &Fingerprint) -> bool {
     command.is_some_and(|c| {
         // Every subcommand this writes, and it has to stay that way: an entry
         // whose command is not recognised is not replaced on the next install,
         // it is left in place beside the new one.
-        c.contains("hook context")
+        let runs_hook = c.contains("hook context")
             || c.contains("hook recall")
             || c.contains("hook flush")
-            || c.contains("hook capture")
+            || c.contains("hook capture");
+        // ...and only the entry answering from the *same* brain. A global wiring
+        // and a local one answer different questions, so installing one must not
+        // eat the other -- that deletion is exactly how a user's hand-patched
+        // `--global` hook died on reinstall. When in doubt (a command whose
+        // selectors do not match what is being installed), the entry is kept:
+        // leaving one entry too many is recoverable, deleting somebody's wiring
+        // silently is not.
+        runs_hook && Fingerprint::of_command(c) == *want
     })
+}
+
+/// Which brain a written command answers from: the selector flags it carries.
+///
+/// This is what makes reinstalling idempotent *per brain* rather than per file.
+/// Two commands with the same fingerprint are the same wiring, whatever else
+/// (path of the binary, format, timeout) changed between installs.
+#[derive(Debug, PartialEq, Eq)]
+struct Fingerprint {
+    global: bool,
+    use_name: Option<String>,
+    brain: Option<String>,
+}
+
+impl Fingerprint {
+    fn of_selection(sel: &Selection) -> Self {
+        Self {
+            global: sel.global,
+            use_name: sel.use_name.clone(),
+            brain: sel.brain.as_ref().map(|p| p.display().to_string()),
+        }
+    }
+
+    fn of_command(command: &str) -> Self {
+        let tokens = sh_tokens(command);
+        let mut fp = Self {
+            global: false,
+            use_name: None,
+            brain: None,
+        };
+        let mut i = 0;
+        while i < tokens.len() {
+            match tokens[i].as_str() {
+                "--global" => fp.global = true,
+                "--use" => {
+                    fp.use_name = tokens.get(i + 1).cloned();
+                    i += 1;
+                }
+                "--brain" => {
+                    fp.brain = tokens.get(i + 1).cloned();
+                    i += 1;
+                }
+                t => {
+                    if let Some(v) = t.strip_prefix("--use=") {
+                        fp.use_name = Some(v.to_string());
+                    } else if let Some(v) = t.strip_prefix("--brain=") {
+                        fp.brain = Some(v.to_string());
+                    }
+                }
+            }
+            i += 1;
+        }
+        fp
+    }
+}
+
+/// The selector flags to append to every command, shell-quoted where a value
+/// needs it: the command string is eventually handed to a shell, and a path
+/// with a space in it must arrive as one argument.
+fn selector_args(sel: &Selection) -> String {
+    let mut s = String::new();
+    if sel.global {
+        s.push_str(" --global");
+    }
+    if let Some(n) = &sel.use_name {
+        s.push_str(" --use ");
+        s.push_str(&sh_quote(n));
+    }
+    if let Some(p) = &sel.brain {
+        s.push_str(" --brain ");
+        s.push_str(&sh_quote(&p.display().to_string()));
+    }
+    s
+}
+
+/// Single-quotes a value when the shell would otherwise split or expand it.
+fn sh_quote(v: &str) -> String {
+    let plain = !v.is_empty()
+        && v.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '/' | ':'));
+    match plain {
+        true => v.to_string(),
+        false => format!("'{}'", v.replace('\'', "'\\''")),
+    }
+}
+
+/// Splits a command string the way the shell that runs it will, far enough to
+/// read selector values back out: whitespace separates, quotes group. Used only
+/// for comparing fingerprints, where the safe failure is a token read wrong and
+/// therefore an entry *kept* rather than deleted.
+fn sh_tokens(command: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut quote: Option<char> = None;
+    for c in command.chars() {
+        match quote {
+            Some(q) if c == q => quote = None,
+            Some(_) => cur.push(c),
+            None if c == '\'' || c == '"' => quote = Some(c),
+            None if c.is_whitespace() => {
+                if !cur.is_empty() {
+                    out.push(std::mem::take(&mut cur));
+                }
+            }
+            None => cur.push(c),
+        }
+    }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
+    out
 }
 
 /// Reads an existing config, or starts an empty one.

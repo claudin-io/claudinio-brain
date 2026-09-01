@@ -676,3 +676,145 @@ fn the_openclaw_plugin_never_lets_a_failure_reach_the_prompt() {
         "and it answers in the field OpenClaw reads"
     );
 }
+
+/// A selector on `hook install` selects which brain the hooks will answer from.
+/// It used to parse and be silently ignored -- an install that says "global"
+/// and wires "local" is the placeholder-path failure wearing a flag.
+#[test]
+fn a_global_install_wires_the_global_brain() {
+    let s = Sandbox::new();
+    s.install("augment", &["--global"]);
+
+    let v = s.json(".augment/settings.json");
+    let command = v
+        .pointer("/hooks/SessionStart/0/hooks/0/command")
+        .and_then(Value::as_str)
+        .expect("a command");
+    assert!(
+        command.ends_with("hook context --global"),
+        "the selector reaches the command: {command}"
+    );
+}
+
+/// A global wiring and a local one answer different questions, so they are two
+/// entries, not one replacing the other -- and each reinstall replaces only its
+/// own.
+#[test]
+fn global_and_local_wirings_coexist() {
+    let s = Sandbox::new();
+    s.install("augment", &[]);
+    s.install("augment", &["--global"]);
+
+    let v = s.json(".augment/settings.json");
+    let both = commands_grouped(&v, "SessionStart");
+    assert_eq!(both.len(), 2, "one local, one global: {both:?}");
+    assert!(both.iter().any(|c| c.ends_with("--global")), "{both:?}");
+    assert!(both.iter().any(|c| !c.contains("--global")), "{both:?}");
+
+    // Installing the global one again replaces it rather than stacking.
+    s.install("augment", &["--global"]);
+    let v = s.json(".augment/settings.json");
+    assert_eq!(commands_grouped(&v, "SessionStart").len(), 2);
+
+    // And so does the local one.
+    s.install("augment", &[]);
+    let v = s.json(".augment/settings.json");
+    assert_eq!(commands_grouped(&v, "SessionStart").len(), 2);
+}
+
+/// Same rule for the wiring somebody wrote by hand: a local install must not
+/// eat a `--global` entry it did not write. That deletion is exactly how a
+/// user's patched-in global hook died on reinstall.
+#[test]
+fn a_hand_written_global_entry_survives_a_local_install() {
+    let s = Sandbox::new();
+    std::fs::create_dir_all(s.home.join(".augment")).unwrap();
+    std::fs::write(
+        s.home.join(".augment/settings.json"),
+        r#"{"hooks":{"SessionStart":[
+            {"hooks":[{"type":"command","command":"/somewhere/brain hook context --global","timeout":15}]}
+        ]}}"#,
+    )
+    .unwrap();
+
+    s.install("augment", &[]);
+    let v = s.json(".augment/settings.json");
+    let both = commands_grouped(&v, "SessionStart");
+    assert!(
+        both.iter().any(|c| c.ends_with("--global")),
+        "the global entry is still there: {both:?}"
+    );
+    assert_eq!(both.len(), 2, "{both:?}");
+}
+
+/// `--use` and `--brain` ride along the same way, and a path is quoted so the
+/// shell that eventually runs the command reads it as one argument.
+#[test]
+fn use_and_brain_selectors_are_written_and_quoted() {
+    let s = Sandbox::new();
+    s.install("codex", &["--use", "work"]);
+    let v = s.json(".codex/hooks.json");
+    for c in commands_grouped(&v, "UserPromptSubmit") {
+        assert!(c.ends_with("hook recall --use work"), "{c}");
+    }
+
+    let s = Sandbox::new();
+    s.install("codex", &["--brain", "/tmp/a dir/b.db"]);
+    let v = s.json(".codex/hooks.json");
+    for c in commands_grouped(&v, "UserPromptSubmit") {
+        assert!(c.ends_with("hook recall --brain '/tmp/a dir/b.db'"), "{c}");
+    }
+}
+
+/// Cline's hooks are scripts rather than config entries, and the selector has
+/// to reach those too.
+#[test]
+fn cline_scripts_carry_the_selector() {
+    let s = Sandbox::new();
+    s.install("cline", &["--global"]);
+    let script = std::fs::read_to_string(s.home.join("Documents/Cline/Hooks/TaskStart")).unwrap();
+    assert!(
+        script.contains("hook context --format cline --global"),
+        "{script}"
+    );
+}
+
+/// The plugin-file harnesses run `brain` bare from PATH and cannot carry a
+/// selector. Accepting one and writing a file that ignores it would be the
+/// silent no-op this module exists to prevent, so it is an error instead.
+#[test]
+fn a_selector_on_a_static_plugin_harness_is_refused() {
+    let s = Sandbox::new();
+    for harness in ["opencode", "kilo", "openclaw"] {
+        let out = Command::cargo_bin("brain")
+            .unwrap()
+            .env("HOME", &s.home)
+            .args(["hook", "install", harness, "--global"])
+            .output()
+            .unwrap();
+        assert!(
+            !out.status.success(),
+            "{harness} must refuse a selector it cannot write"
+        );
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(err.contains("--global"), "{harness}: {err}");
+    }
+}
+
+/// The commands written for one event, flattened across matcher groups.
+fn commands_grouped(v: &Value, event: &str) -> Vec<String> {
+    v.pointer(&format!("/hooks/{event}"))
+        .and_then(Value::as_array)
+        .map(|l| {
+            l.iter()
+                .flat_map(|g| {
+                    g.pointer("/hooks")
+                        .and_then(Value::as_array)
+                        .cloned()
+                        .unwrap_or_default()
+                })
+                .filter_map(|e| e.get("command").and_then(Value::as_str).map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
