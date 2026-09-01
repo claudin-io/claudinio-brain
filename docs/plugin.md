@@ -115,7 +115,11 @@ brain hook capture --transcript ~/.claude/projects/<project>/<session>.jsonl --d
 
 ## Windows
 
-The bundled hooks go through `hooks/brain-hook.sh`, which is POSIX `sh`. On
+The bundled hooks go through `hooks/brain-hook.sh`, which is POSIX `sh`. Its
+arguments are `<what> [format]`, plus any of the CLI's brain selectors
+(`--global`, `--use <name>`, `--brain <path>`) forwarded verbatim in any
+position — so a hand-wired hook can answer from the global brain with
+`brain-hook.sh context text --global`. On
 Windows, wire `brain hook <what>` directly as shown above — the binary is the
 same, only the wrapper is not.
 
